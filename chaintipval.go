@@ -8,8 +8,8 @@ import (
 	"os"
 
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/utreexo/utreexod/chaincfg/chainhash"
 )
 
 func main() {
@@ -115,20 +115,25 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params) { // 여기서 넷
 
 // 4. 블록 요청 함수
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params) {
-	// stop hash 명시적으로 설정
+	// 최신 블록 해시 (현재는 제네시스 블록 사용, 실제로는 최신 블록 해시 사용 필요)
+	genesisHash := netParams.GenesisHash
+
+	// stopHash는 0으로 설정하여 끝까지 요청 가능
+	stopHash := chainhash.Hash{}
+
 	getBlocksMsg := &wire.MsgGetBlocks{
 		ProtocolVersion:    wire.ProtocolVersion,
-		BlockLocatorHashes: []*chainhash.Hash{netParams.GenesisHash}, // 시작점
-		HashStop:           chainhash.Hash{},                         // 끝점 (최신까지)
+		BlockLocatorHashes: []*chainhash.Hash{genesisHash}, // 최신 블록 해시 사용
+		HashStop:           stopHash,                       // stopHash 적용
 	}
 
-	err := wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net) // 120번째 줄, netParams 사용
+	err := wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
 	if err != nil {
 		log.Fatalf("Failed to send getblocks message: %v", err)
 	}
 	fmt.Println("Sent getblocks request")
 
-	// 블록 수신
+	// Get Block Data
 	for {
 		msg, _, err := wire.ReadMessage(conn, 0, netParams.Net)
 		if err != nil {
@@ -137,10 +142,47 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params) {
 		}
 
 		switch m := msg.(type) {
+		case *wire.MsgInv: // Inv 메시지 수신
+			fmt.Printf("Received inventory message: %d items\n", len(m.InvList))
+			for _, inv := range m.InvList {
+				if inv.Type == wire.InvTypeBlock { // 블록 데이터 요청
+					fmt.Println("Requesting block:", inv.Hash)
+
+					// getdata 요청
+					getDataMsg := wire.NewMsgGetData()
+					getDataMsg.AddInvVect(inv)
+
+					err = wire.WriteMessage(conn, getDataMsg, 0, netParams.Net)
+					if err != nil {
+						log.Printf("Failed to send getdata message: %v", err)
+					}
+				}
+			}
+
 		case *wire.MsgBlock:
 			fmt.Println("Received block:", m.BlockHash().String())
+			processBlock(m) // ✅ 블록을 처리하는 함수 호출
+
+		case *wire.MsgReject:
+			fmt.Printf("Received reject message: Command=%s, Code=%d, Reason=%s\n",
+				m.Cmd, m.Code, m.Reason)
+			continue // 다음 메시지를 읽기 위해 루프 계속 진행
+
 		default:
 			fmt.Printf("Received other message: %T\n", m)
 		}
+	}
+}
+
+// requestBlocks 밖으로 `processBlock()`을 이동시켜야해서 이동 시킴킴
+func processBlock(block *wire.MsgBlock) {
+	fmt.Println("Processing block:", block.BlockHash().String())
+
+	// 블록 높이, 트랜잭션 개수 출력
+	fmt.Printf("Transaction Count: %d\n", len(block.Transactions))
+
+	// 첫 번째 트랜잭션 정보 출력
+	if len(block.Transactions) > 0 {
+		fmt.Printf("First transaction ID: %s\n", block.Transactions[0].TxHash().String())
 	}
 }

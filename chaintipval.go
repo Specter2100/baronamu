@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 
+	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -65,36 +66,35 @@ func main() {
 	connectToNode(fullAddress, netParams)
 }
 
-func connectToNode(nodeIP string, netParams *chaincfg.Params) { // 여기서 넷params 정의
+func connectToNode(nodeIP string, netParams *chaincfg.Params) {
+	// conn 정의 추가
 	conn, err := net.Dial("tcp", nodeIP)
 	if err != nil {
 		log.Fatalf("Failed to connect to node: %v", err)
 	}
-	defer conn.Close() // 이거 defer하면 연결 된 다음 연결 종료되는 함수같은데 나는 계속 정보를 주고 받아야하니 종료 안되게 얘가 사라져야하지 않을까...?
+	defer conn.Close()
 	fmt.Println("Connected to node:", nodeIP)
 
-	// 2. 버전 핸드쉨 (version 메시지 전송) 하는 이유는 올바른 넷웤끼리 통신 주고 받을려면 해야한다는데 왜 내 ip주소를 보내야하지? 이리로 오게 할려고 그런건가
-	localAddr := conn.LocalAddr().(*net.TCPAddr)   // 내 주소
-	remoteAddr := conn.RemoteAddr().(*net.TCPAddr) // 노드 주소
+	// Version 메시지 전송 준비
+	localAddr := conn.LocalAddr().(*net.TCPAddr)
+	remoteAddr := conn.RemoteAddr().(*net.TCPAddr)
+	var serviceFlag wire.ServiceFlag
+	serviceFlag = wire.SFNodeNetworkLimited
 
-	// 서비스 플래그를 0으로 설정 (이것도 비트코인 라이브러리인데... 다른 서비스 플래그도 많은데 얘 하나만 있어도 되나? 많은 정보 줄 수 있으면 더 좋은거 아닌가)
-	serviceFlag := wire.SFNodeNetwork | wire.SFNodeGetUTXO
-
-	// 버전 메시지 생성
 	verMsg := wire.NewMsgVersion(
-		wire.NewNetAddressIPPort(localAddr.IP, uint16(localAddr.Port), serviceFlag),   // 내 주소
-		wire.NewNetAddressIPPort(remoteAddr.IP, uint16(remoteAddr.Port), serviceFlag), // 상대 주소
+		wire.NewNetAddressIPPort(localAddr.IP, uint16(localAddr.Port), serviceFlag),
+		wire.NewNetAddressIPPort(remoteAddr.IP, uint16(remoteAddr.Port), 0),
 		0,
-		0)
+		0,
+	)
 
-	// 메시지 전송
 	err = wire.WriteMessage(conn, verMsg, 0, netParams.Net)
 	if err != nil {
 		log.Fatalf("Failed to send version message: %v", err)
 	}
 	fmt.Println("Sent version message")
 
-	// 3. 응답 읽기
+	// ... (이전 코드 생략: conn 연결, version 메시지 전송 등)
 	for {
 		msg, _, err := wire.ReadMessage(conn, 0, netParams.Net)
 		if err != nil {
@@ -104,7 +104,14 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params) { // 여기서 넷
 		switch m := msg.(type) {
 		case *wire.MsgVerAck:
 			fmt.Println("Received verack")
-			// 버전 핸드셰이크가 완료되었으므로 블록 요청 가능
+			// 수정된 부분: 상대에게 verack 응답 전송
+			verAckMsg := wire.NewMsgVerAck()                           // verack 메시지 생성
+			err = wire.WriteMessage(conn, verAckMsg, 0, netParams.Net) // verack 전송
+			if err != nil {
+				log.Fatalf("Failed to send verack message: %v", err) // 전송 실패 시 에러 처리
+			}
+			fmt.Println("Sent verack response") // 전송 확인 출력
+			// 핸드셰이크 완료 후 블록 요청
 			requestBlocks(conn, netParams)
 			return
 		default:
@@ -115,16 +122,11 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params) { // 여기서 넷
 
 // 4. 블록 요청 함수
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params) {
-	// 최신 블록 해시 (현재는 제네시스 블록 사용, 실제로는 최신 블록 해시 사용 필요)
 	genesisHash := netParams.GenesisHash
-
-	// stopHash는 0으로 설정하여 끝까지 요청 가능
-	stopHash := chainhash.Hash{}
-
 	getBlocksMsg := &wire.MsgGetBlocks{
 		ProtocolVersion:    wire.ProtocolVersion,
-		BlockLocatorHashes: []*chainhash.Hash{genesisHash}, // 최신 블록 해시 사용
-		HashStop:           stopHash,                       // stopHash 적용
+		BlockLocatorHashes: []*chainhash.Hash{genesisHash},
+		HashStop:           chainhash.Hash{},
 	}
 
 	err := wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
@@ -133,56 +135,86 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params) {
 	}
 	fmt.Println("Sent getblocks request")
 
-	// Get Block Data
+	requested := false // getdata 요청 상태 추적
+
 	for {
 		msg, _, err := wire.ReadMessage(conn, 0, netParams.Net)
 		if err != nil {
+			if me, ok := err.(*wire.MessageError); ok && me.Description == "payload exceeds max length" {
+				fmt.Println("Received invalid message (size limit exceeded), skipping:", err)
+				return //continue에서 리턴으로 바꿈
+			}
 			log.Printf("Failed to read message: %v", err)
-			return
+			continue
 		}
 
 		switch m := msg.(type) {
-		case *wire.MsgInv: // Inv 메시지 수신
-			fmt.Printf("Received inventory message: %d items\n", len(m.InvList))
+		case *wire.MsgInv:
+			if requested {
+				fmt.Println("Ignoring additional MsgInv while waiting for MsgBlock") //추가 블록이 없이면 여기서 막힘힘
+				return                                                               // getdata 후 추가 MsgInv 무시 / continue에서 리턴으로 바꿈
+			}
+			fmt.Printf("Received inventory message: %d blocks available\n", len(m.InvList))
+			getDataMsg := wire.NewMsgGetData()
 			for _, inv := range m.InvList {
-				if inv.Type == wire.InvTypeBlock { // 블록 데이터 요청
-					fmt.Println("Requesting block:", inv.Hash)
-
-					// getdata 요청
-					getDataMsg := wire.NewMsgGetData()
+				if inv.Type == wire.InvTypeBlock {
 					getDataMsg.AddInvVect(inv)
-
-					err = wire.WriteMessage(conn, getDataMsg, 0, netParams.Net)
-					if err != nil {
-						log.Printf("Failed to send getdata message: %v", err)
-					}
 				}
 			}
-
+			err = wire.WriteMessage(conn, getDataMsg, 0, netParams.Net)
+			if err != nil {
+				log.Printf("Failed to send getdata message: %v", err)
+				return //continue에서 리턴으로 바꿈
+			}
+			fmt.Println("Sent getdata request for all blocks")
+			requested = true // 요청 보냄 표시
 		case *wire.MsgBlock:
-			fmt.Println("Received block:", m.BlockHash().String())
-			processBlock(m) // ✅ 블록을 처리하는 함수 호출
-
+			fmt.Printf("Received block: %s, TxCount: %d\n",
+				m.BlockHash().String(), len(m.Transactions))
+			processBlock(m)
+			requested = false // 블록 받았으니 다음 MsgInv 허용
 		case *wire.MsgReject:
 			fmt.Printf("Received reject message: Command=%s, Code=%d, Reason=%s\n",
 				m.Cmd, m.Code, m.Reason)
-			continue // 다음 메시지를 읽기 위해 루프 계속 진행
-
+			return //continue에서 리턴으로 바꿈
 		default:
 			fmt.Printf("Received other message: %T\n", m)
 		}
 	}
 }
 
-// requestBlocks 밖으로 `processBlock()`을 이동시켜야해서 이동 시킴킴
+// requestBlocks 밖으로 `processBlock()`을 이동시켜야해서 이동 시킴
 func processBlock(block *wire.MsgBlock) {
 	fmt.Println("Processing block:", block.BlockHash().String())
-
 	// 블록 높이, 트랜잭션 개수 출력
 	fmt.Printf("Transaction Count: %d\n", len(block.Transactions))
-
 	// 첫 번째 트랜잭션 정보 출력
 	if len(block.Transactions) > 0 {
-		fmt.Printf("First transaction ID: %s\n", block.Transactions[0].TxHash().String())
+		fmt.Printf("Recent transaction ID: %s\n", block.Transactions[0].TxHash().String())
 	}
+	// 트랜잭션 개수 체크
+	if len(block.Transactions) == 0 {
+		fmt.Println("검증 실패: 트랜잭션이 없는 블록입니다!")
+		return
+	}
+	// 검증 추가: 코인베이스 트랜잭션 확인
+	if len(block.Transactions) > 0 {
+		firstTx := block.Transactions[0]
+		if len(firstTx.TxIn) == 0 {
+			fmt.Println("검증 실패: 첫 번째 트랜잭션이 코인베이스가 아닙니다!")
+			return
+		}
+	}
+	// 머클 루트 검증
+	calculatedMerkleRoot := blockchain.CalcMerkleRoot(block.Transactions)
+	fmt.Printf("Calculated Merkle Root: %s\n", calculatedMerkleRoot.String())
+	fmt.Printf("Header Merkle Root: %s\n", block.Header.MerkleRoot.String())
+	if calculatedMerkleRoot != block.Header.MerkleRoot {
+		fmt.Println("검증 실패: 머클 루트가 일치하지 않습니다!")
+		return
+	}
+	// 추가 정보: 난이도 Bits 출력 (선택적)
+	fmt.Printf("Block Difficulty Bits: %x\n", block.Header.Bits)
+	fmt.Printf("Merkle Root: %s\n", block.Header.MerkleRoot.String()) //머클루트꺼
+	fmt.Println("블록 검증 완료!")
 }

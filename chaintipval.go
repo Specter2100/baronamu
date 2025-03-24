@@ -167,23 +167,33 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) {
 	genesisHash := netParams.GenesisHash
-	// 수정: 블록체인 히스토리 기준으로 요청
-	blockLocator := chain.BlockLocatorFromHash(genesisHash) // 체인 히스토리 생성
+
+	//원하는 블록의 해시를 여기에 설정
+	targetBlockHash, err := chainhash.NewHashFromStr("00000131de56604f752c0b072f468a2904e5d807e7ee79bd32a5be00bef17b2e")
+	// 예제 해시 캘빈님 0000001d2e1b1c5c1a052f10a4c9ef868dd7fe095985be24036e18ba3ecaa1ef
+	if err != nil {
+		log.Fatalf("Invalid target block hash: %v", err)
+	}
+
+	// 블록체인 히스토리 기준으로 요청 (locator 생성)
+	blockLocator := chain.BlockLocatorFromHash(genesisHash)
+
+	// 🎯 원하는 블록까지만 요청하도록 HashStop 설정
 	getBlocksMsg := &wire.MsgGetBlocks{
 		ProtocolVersion:    wire.ProtocolVersion,
 		BlockLocatorHashes: blockLocator,
-		HashStop:           chainhash.Hash{},
+		HashStop:           *targetBlockHash, // 🎯 목표 블록까지만 요청
 	}
 
-	err := wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
+	err = wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
 	if err != nil {
 		log.Fatalf("Failed to send getblocks message: %v", err)
 	}
-	fmt.Println("Sent getblocks request")
+	fmt.Println("Sent getblocks request up to target block")
 
 	requested := false
 
-	for { //포룹이라 계속 반복
+	for {
 		msg, _, err := wire.ReadMessage(conn, 0, netParams.Net)
 		if err != nil {
 			if me, ok := err.(*wire.MessageError); ok && me.Description == "payload exceeds max length" {
@@ -194,15 +204,15 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 			continue
 		}
 
-		switch m := msg.(type) { //m은 무엇인가 m은 msg인데 이건 어디서 오는가가
+		switch m := msg.(type) {
 		case *wire.MsgInv:
 			if requested {
 				fmt.Println("Ignoring additional MsgInv while waiting for MsgBlock")
 				os.Exit(0)
 			}
 			fmt.Printf("Received inventory message: %d blocks available\n", len(m.InvList))
-			getDataMsg := wire.NewMsgGetData() //데이터메세지 내가 생성하는거거
-			for _, inv := range m.InvList {    //여기서 m이 어디서 오는가하면 186에서 오는거
+			getDataMsg := wire.NewMsgGetData()
+			for _, inv := range m.InvList {
 				if inv.Type == wire.InvTypeBlock {
 					getDataMsg.AddInvVect(inv)
 				}
@@ -218,6 +228,14 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 			fmt.Printf("Received block: %s, TxCount: %d\n",
 				m.BlockHash().String(), len(m.Transactions))
 			processBlock(m, chain)
+
+			// 🎯 목표 블록을 받으면 중단
+			blockHash := m.BlockHash() // 블록 해시를 변수에 저장
+			if targetBlockHash.IsEqual(&blockHash) {
+				fmt.Println("🎯 Target block received, stopping download.")
+				return
+			}
+
 			requested = false
 		case *wire.MsgReject:
 			fmt.Printf("Received reject message: Command=%s, Code=%d, Reason=%s\n",

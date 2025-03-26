@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/utreexo/utreexod/blockchain"
@@ -188,9 +189,10 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 	}
 	fmt.Println("Sent initial getblocks request")
 
+	var invCount int // MsgInv 반복 횟수 추적
 	for {
 		fmt.Println("Waiting for message...")
-		conn.SetReadDeadline(time.Now().Add(300 * time.Second)) //5분 타임아웃 설정정
+		conn.SetReadDeadline(time.Now().Add(300 * time.Second))
 		msg, _, err := wire.ReadMessage(conn, 0, netParams.Net)
 		if err != nil {
 			log.Printf("Failed to read message: %v", err)
@@ -200,10 +202,8 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 
 		switch m := msg.(type) {
 		case *wire.MsgInv:
-			fmt.Printf("MsgInv with %d items\n", len(m.InvList))
 			getDataMsg := wire.NewMsgGetData()
-			for i, inv := range m.InvList {
-				fmt.Printf(" - Item %d: %s\n", i, inv.Hash.String())
+			for _, inv := range m.InvList {
 				if inv.Type == wire.InvTypeBlock {
 					getDataMsg.AddInvVect(inv)
 				}
@@ -211,7 +211,7 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 			if len(getDataMsg.InvList) == 0 {
 				fmt.Println("Empty InvList, requesting more blocks")
 				blockLocator = chain.BlockLocatorFromHash(&chain.BestSnapshot().Hash)
-				getBlocksMsg = &wire.MsgGetBlocks{
+				getBlocksMsg := &wire.MsgGetBlocks{
 					ProtocolVersion:    wire.ProtocolVersion,
 					BlockLocatorHashes: blockLocator,
 					HashStop:           *targetBlockHash,
@@ -227,7 +227,12 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 			if err != nil {
 				return fmt.Errorf("failed to send getdata message: %v", err)
 			}
-			fmt.Println("Sent getdata request") //오류 발생 지점
+			invCount++
+			if invCount > 5 { // 5번 이상 MsgInv 반복 시 종료
+				fmt.Println("Too many MsgInv repeats, reconnecting...")
+				conn.Close()
+				return fmt.Errorf("reconnect required: too many MsgInv messages")
+			}
 
 		case *wire.MsgBlock:
 			blockHash := m.BlockHash()
@@ -235,19 +240,32 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 			block := btcutil.NewBlock(m)
 			_, _, err := chain.ProcessBlock(block, blockchain.BFNone)
 			if err != nil {
+				if strings.Contains(err.Error(), "already have block") {
+					fmt.Printf("Block %s already exists, skipping\n", blockHash.String())
+					blockLocator = chain.BlockLocatorFromHash(&blockHash)
+					getBlocksMsg := &wire.MsgGetBlocks{
+						ProtocolVersion:    wire.ProtocolVersion,
+						BlockLocatorHashes: blockLocator,
+						HashStop:           *targetBlockHash,
+					}
+					err = wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
+					if err != nil {
+						return fmt.Errorf("failed to send next getblocks: %v", err)
+					}
+					fmt.Println("Requested next blocks after skipping duplicate")
+					continue
+				}
 				return fmt.Errorf("block validation failed for %s: %v", blockHash.String(), err)
 			}
 			fmt.Printf("Block %s validated\n", blockHash.String())
-
 			if targetBlockHash.IsEqual(&blockHash) {
 				fmt.Println("Target block reached, exiting")
 				conn.Close()
 				os.Exit(0)
 			}
-
-			blockLocator = chain.BlockLocatorFromHash(&blockHash) // 최신 블록으로 업데이트
+			blockLocator = chain.BlockLocatorFromHash(&blockHash)
 			fmt.Printf("Updated blockLocator to %s\n", blockHash.String())
-			getBlocksMsg = &wire.MsgGetBlocks{
+			getBlocksMsg := &wire.MsgGetBlocks{
 				ProtocolVersion:    wire.ProtocolVersion,
 				BlockLocatorHashes: blockLocator,
 				HashStop:           *targetBlockHash,
@@ -257,13 +275,6 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 				return fmt.Errorf("failed to send next getblocks: %v", err)
 			}
 			fmt.Println("Requested next blocks")
-
-		case *wire.MsgReject:
-			fmt.Printf("Reject: %s\n", m.Reason)
-			return fmt.Errorf("rejected: %s", m.Reason)
-
-		default:
-			fmt.Printf("Other message: %T\n", m)
 		}
 	}
 }

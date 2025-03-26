@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"github.com/utreexo/utreexod/blockchain"
 	"github.com/utreexo/utreexod/btcutil"
@@ -167,17 +168,14 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 		return fmt.Errorf("invalid target block hash: %v", err)
 	}
 
-	// 현재 블록체인의 상태를 기반으로 블록 로케이터 생성
 	currentHeight := chain.BestSnapshot().Height
 	var blockLocator []*chainhash.Hash
 	if currentHeight == 0 {
 		blockLocator = chain.BlockLocatorFromHash(genesisHash)
 	} else {
-		bestHash := chain.BestSnapshot().Hash
-		blockLocator = chain.BlockLocatorFromHash(&bestHash)
+		blockLocator = chain.BlockLocatorFromHash(&chain.BestSnapshot().Hash)
 	}
 
-	// getblocks 메시지로 블록 요청
 	getBlocksMsg := &wire.MsgGetBlocks{
 		ProtocolVersion:    wire.ProtocolVersion,
 		BlockLocatorHashes: blockLocator,
@@ -188,55 +186,67 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 	if err != nil {
 		return fmt.Errorf("failed to send getblocks message: %v", err)
 	}
-	fmt.Println("Sent getblocks request up to target block")
+	fmt.Println("Sent initial getblocks request")
 
 	for {
+		fmt.Println("Waiting for message...")
+		conn.SetReadDeadline(time.Now().Add(300 * time.Second)) //5분 타임아웃 설정정
 		msg, _, err := wire.ReadMessage(conn, 0, netParams.Net)
 		if err != nil {
 			log.Printf("Failed to read message: %v", err)
 			continue
 		}
+		fmt.Printf("Received message: %T\n", msg)
 
 		switch m := msg.(type) {
 		case *wire.MsgInv:
+			fmt.Printf("MsgInv with %d items\n", len(m.InvList))
 			getDataMsg := wire.NewMsgGetData()
-			for _, inv := range m.InvList {
+			for i, inv := range m.InvList {
+				fmt.Printf(" - Item %d: %s\n", i, inv.Hash.String())
 				if inv.Type == wire.InvTypeBlock {
 					getDataMsg.AddInvVect(inv)
 				}
 			}
 			if len(getDataMsg.InvList) == 0 {
+				fmt.Println("Empty InvList, requesting more blocks")
+				blockLocator = chain.BlockLocatorFromHash(&chain.BestSnapshot().Hash)
+				getBlocksMsg = &wire.MsgGetBlocks{
+					ProtocolVersion:    wire.ProtocolVersion,
+					BlockLocatorHashes: blockLocator,
+					HashStop:           *targetBlockHash,
+				}
+				err = wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
+				if err != nil {
+					return fmt.Errorf("failed to send additional getblocks: %v", err)
+				}
 				continue
 			}
+			fmt.Printf("Sending getdata for %d blocks\n", len(getDataMsg.InvList))
 			err = wire.WriteMessage(conn, getDataMsg, 0, netParams.Net)
 			if err != nil {
 				return fmt.Errorf("failed to send getdata message: %v", err)
 			}
-			fmt.Println("Sent getdata request") //여기서 막힘
+			fmt.Println("Sent getdata request") //오류 발생 지점
 
 		case *wire.MsgBlock:
 			blockHash := m.BlockHash()
-			fmt.Printf("Received block: %s, TxCount: %d\n", blockHash.String(), len(m.Transactions))
-
-			// *wire.MsgBlock을 *btcutil.Block으로 변환
+			fmt.Printf("Received block: %s, Height: %d\n", blockHash.String(), chain.BestSnapshot().Height+1)
 			block := btcutil.NewBlock(m)
-
-			// 블록 검증
 			_, _, err := chain.ProcessBlock(block, blockchain.BFNone)
 			if err != nil {
 				return fmt.Errorf("block validation failed for %s: %v", blockHash.String(), err)
 			}
-			fmt.Printf("This Block is validated and added to chain\n", blockHash.String())
+			fmt.Printf("Block %s validated\n", blockHash.String())
 
-			// 목표 블록에 도달했는지 확인
 			if targetBlockHash.IsEqual(&blockHash) {
-				fmt.Println("Target block received, stopping download and closing connection.")
+				fmt.Println("Target block reached, exiting")
 				conn.Close()
 				os.Exit(0)
 			}
 
-			// 다음 블록 요청을 위해 blockLocator 업데이트
-			blockLocator = chain.BlockLocatorFromHash(&blockHash)
+			blockLocator = chain.BlockLocatorFromHash(&blockHash) // 최신 블록으로 업데이트
+			fmt.Printf("Updated blockLocator to %s\n", blockHash.String())
 			getBlocksMsg = &wire.MsgGetBlocks{
 				ProtocolVersion:    wire.ProtocolVersion,
 				BlockLocatorHashes: blockLocator,
@@ -244,16 +254,16 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 			}
 			err = wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
 			if err != nil {
-				return fmt.Errorf("failed to send next getblocks message: %v", err)
+				return fmt.Errorf("failed to send next getblocks: %v", err)
 			}
-			fmt.Println("Requested next set of blocks")
+			fmt.Println("Requested next blocks")
 
 		case *wire.MsgReject:
-			fmt.Printf("Received reject message: Command=%s, Code=%d, Reason=%s\n", m.Cmd, m.Code, m.Reason)
-			return fmt.Errorf("received reject message: %s", m.Reason)
+			fmt.Printf("Reject: %s\n", m.Reason)
+			return fmt.Errorf("rejected: %s", m.Reason)
 
 		default:
-			fmt.Printf("Received other message: %T\n", m)
+			fmt.Printf("Other message: %T\n", m)
 		}
 	}
 }

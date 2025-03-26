@@ -226,7 +226,7 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 			if err != nil {
 				return fmt.Errorf("block validation failed for %s: %v", blockHash.String(), err)
 			}
-			fmt.Printf("Block %s validated and added to chain\n", blockHash.String())
+			fmt.Printf("This Block is validated and added to chain\n", blockHash.String())
 
 			// 목표 블록에 도달했는지 확인
 			if targetBlockHash.IsEqual(&blockHash) {

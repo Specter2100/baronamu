@@ -1,6 +1,6 @@
 package main
 
-//노드와 연결-블록 받기-검증-시스템 종료료
+// 노드와 연결-블록 받기-검증-시스템 종료료
 import (
 	"flag"
 	"fmt"
@@ -150,7 +150,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 				log.Fatalf("Failed to send verack message: %v", err)
 			}
 			fmt.Println("Sent verack response")
-			err = requestBlocks(conn, netParams, chain) // 에러를 반환받아 처리
+			err = requestBlocks(conn, netParams, chain)
 			if err != nil {
 				log.Fatalf("Failed during block request: %v", err)
 			}
@@ -177,18 +177,31 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 		blockLocator = chain.BlockLocatorFromHash(&chain.BestSnapshot().Hash)
 	}
 
+	// getheaders 요청
+	getHeadersMsg := &wire.MsgGetHeaders{
+		ProtocolVersion:    wire.ProtocolVersion,
+		BlockLocatorHashes: blockLocator,
+		HashStop:           *targetBlockHash,
+	}
+	err = wire.WriteMessage(conn, getHeadersMsg, 0, netParams.Net)
+	if err != nil {
+		return fmt.Errorf("failed to send getheaders message: %v", err)
+	}
+	fmt.Println("Sent getheaders request to check peer height up to target")
+
+	// getblocks 요청
 	getBlocksMsg := &wire.MsgGetBlocks{
 		ProtocolVersion:    wire.ProtocolVersion,
 		BlockLocatorHashes: blockLocator,
 		HashStop:           *targetBlockHash,
 	}
-
 	err = wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
 	if err != nil {
 		return fmt.Errorf("failed to send getblocks message: %v", err)
 	}
 	fmt.Println("Sent initial getblocks request")
 	fmt.Println("chain best height", chain.BestSnapshot().Height)
+
 	blocksInQueue := make(map[chainhash.Hash]struct{})
 
 	for {
@@ -201,6 +214,23 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 		fmt.Printf("Received message: %T\n", msg)
 
 		switch m := msg.(type) {
+		case *wire.MsgHeaders:
+			headerCount := len(m.Headers)
+			if headerCount > 0 {
+				peerHeight := currentHeight + int32(headerCount)
+				fmt.Printf("Peer reported %d headers up to target, estimated height: %d\n", headerCount, peerHeight)
+				// 수정: 포인터 메서드 호출 문제 해결
+				for _, header := range m.Headers {
+					headerHash := header.BlockHash()         // *chainhash.Hash
+					if headerHash.IsEqual(targetBlockHash) { // 둘 다 *Hash로 비교
+						fmt.Println("Target block found in peer headers")
+						break
+					}
+				}
+			} else {
+				fmt.Println("Peer returned no headers up to target")
+			}
+
 		case *wire.MsgInv:
 			fmt.Printf("MsgInv with %d items\n", len(m.InvList))
 			getDataMsg := wire.NewMsgGetData()
@@ -209,11 +239,11 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 				if inv.Type == wire.InvTypeBlock {
 					getDataMsg.AddInvVect(inv)
 					blocksInQueue[inv.Hash] = struct{}{}
+					fmt.Printf("Requested block: %s\n", inv.Hash.String())
 				}
 			}
 			if len(getDataMsg.InvList) == 0 {
 				fmt.Println("Empty InvList, requesting more blocks")
-				panic("hi")
 				blockLocator = chain.BlockLocatorFromHash(&chain.BestSnapshot().Hash)
 				getBlocksMsg = &wire.MsgGetBlocks{
 					ProtocolVersion:    wire.ProtocolVersion,
@@ -224,6 +254,7 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 				if err != nil {
 					return fmt.Errorf("failed to send additional getblocks: %v", err)
 				}
+				fmt.Println("Sent additional getblocks request")
 				continue
 			}
 			fmt.Printf("Sending getdata for %d blocks\n", len(getDataMsg.InvList))
@@ -231,10 +262,13 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 			if err != nil {
 				return fmt.Errorf("failed to send getdata message: %v", err)
 			}
-			fmt.Println("Sent getdata request") //오류 발생 지점
+			fmt.Println("Sent getdata request")
+			fmt.Println("Current blocks in queue:", len(blocksInQueue))
+			for hash := range blocksInQueue {
+				fmt.Printf(" - Queued block: %s\n", hash.String())
+			}
 
 		case *wire.MsgBlock:
-
 			block := btcutil.NewBlock(m)
 			delete(blocksInQueue, *block.Hash())
 			snapshot := chain.BestSnapshot()
@@ -257,17 +291,28 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 
 			fmt.Println("chain best height", chain.BestSnapshot().Height)
 			fmt.Println("blocks in queue", len(blocksInQueue))
+
 			if len(blocksInQueue) == 0 {
-				blockLocator := blockchain.BlockLocator([]*chainhash.Hash{block.Hash()})
-				fmt.Printf("locator %v, target %v\n", block.Hash(), targetBlockHash)
-				getBlocksMsg = &wire.MsgGetBlocks{
-					ProtocolVersion:    wire.ProtocolVersion,
-					BlockLocatorHashes: blockLocator,
-					HashStop:           *targetBlockHash,
-				}
-				err = wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
+				fmt.Println("All requested blocks received")
+				haveTarget, err := chain.HaveBlock(targetBlockHash)
 				if err != nil {
-					return fmt.Errorf("failed to send next getblocks: %v", err)
+					log.Printf("Error checking target block existence: %v", err)
+					continue
+				}
+				if !haveTarget {
+					fmt.Println("Target not reached, sending new getblocks")
+					blockLocator = blockchain.BlockLocator([]*chainhash.Hash{block.Hash()})
+					fmt.Printf("locator %v, target %v\n", block.Hash(), targetBlockHash)
+					getBlocksMsg = &wire.MsgGetBlocks{
+						ProtocolVersion:    wire.ProtocolVersion,
+						BlockLocatorHashes: blockLocator,
+						HashStop:           *targetBlockHash,
+					}
+					err = wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
+					if err != nil {
+						return fmt.Errorf("failed to send next getblocks: %v", err)
+					}
+					fmt.Println("Sent additional getblocks request")
 				}
 			}
 

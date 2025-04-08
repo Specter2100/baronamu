@@ -126,18 +126,18 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 	verMsg := wire.NewMsgVersion(
 		wire.NewNetAddressIPPort(localAddr.IP, uint16(localAddr.Port), wire.SFNodeNetworkLimited),
 		wire.NewNetAddressIPPort(remoteAddr.IP, uint16(remoteAddr.Port), 0),
-		0,
-		0,
+		0,                         // nonce
+		wire.SFNodeNetworkLimited, // services
 	)
 
-	err = wire.WriteMessage(conn, verMsg, 0, netParams.Net)
+	err = wire.WriteMessage(conn, verMsg, wire.ProtocolVersion, netParams.Net)
 	if err != nil {
 		log.Fatalf("Failed to send version message: %v", err)
 	}
 	fmt.Println("Sent version message")
 
 	for {
-		msg, _, err := wire.ReadMessage(conn, 0, netParams.Net)
+		msg, _, err := wire.ReadMessage(conn, wire.ProtocolVersion, netParams.Net)
 		if err != nil {
 			log.Fatalf("Failed to read message: %v", err)
 		}
@@ -145,7 +145,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 		switch m := msg.(type) {
 		case *wire.MsgVerAck:
 			fmt.Println("Received verack")
-			err = wire.WriteMessage(conn, wire.NewMsgVerAck(), 0, netParams.Net)
+			err = wire.WriteMessage(conn, wire.NewMsgVerAck(), wire.ProtocolVersion, netParams.Net)
 			if err != nil {
 				log.Fatalf("Failed to send verack message: %v", err)
 			}
@@ -161,6 +161,8 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 	}
 }
 
+// 핸드쉐이크 완료 후 블록 요청 과정으로 블록 요청 하나하나 보는
+// requestBlocks: 전체 흐름 관리
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
 	genesisHash := netParams.GenesisHash
 	targetBlockHash, err := chainhash.NewHashFromStr("00000109740b87e36d6092cbc1e92bdc17f92b52ad225b6dcdd62ca8ab0820d1")
@@ -168,6 +170,21 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 		return fmt.Errorf("invalid target block hash: %v", err)
 	}
 
+	// 초기 설정
+	_, blockLocator := setupBlockRequest(chain, genesisHash)
+
+	// 초기 getblocks 요청
+	err = sendGetBlocks(conn, netParams, chain, blockLocator, targetBlockHash)
+	if err != nil {
+		return err
+	}
+
+	// 메시지 처리 루프
+	return processMessages(conn, netParams, chain, targetBlockHash)
+}
+
+// setupBlockRequest: 초기 설정 (높이와 로케이터 준비)/ 현재 높이와 블록 로케이터를 준비해서 반환
+func setupBlockRequest(chain *blockchain.BlockChain, genesisHash *chainhash.Hash) (int32, []*chainhash.Hash) {
 	currentHeight := chain.BestSnapshot().Height
 	fmt.Println("currentHeight", currentHeight)
 	var blockLocator []*chainhash.Hash
@@ -176,37 +193,33 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 	} else {
 		blockLocator = chain.BlockLocatorFromHash(&chain.BestSnapshot().Hash)
 	}
+	return currentHeight, blockLocator
+}
 
-	// getheaders 요청
-	getHeadersMsg := &wire.MsgGetHeaders{
-		ProtocolVersion:    wire.ProtocolVersion,
-		BlockLocatorHashes: blockLocator,
-		HashStop:           *targetBlockHash,
-	}
-	err = wire.WriteMessage(conn, getHeadersMsg, 0, netParams.Net)
-	if err != nil {
-		return fmt.Errorf("failed to send getheaders message: %v", err)
-	}
-	fmt.Println("Sent getheaders request to check peer height up to target")
-
-	// getblocks 요청
+// sendGetBlocks: getblocks 메시지 전송/ MsgGetBlocks 메시지를 생성하고 전송. 초기 요청과 추가 요청에 재사용 가능
+func sendGetBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain, blockLocator []*chainhash.Hash, targetBlockHash *chainhash.Hash) error {
+	fmt.Println("Block locator:", blockLocator)
 	getBlocksMsg := &wire.MsgGetBlocks{
 		ProtocolVersion:    wire.ProtocolVersion,
 		BlockLocatorHashes: blockLocator,
 		HashStop:           *targetBlockHash,
 	}
-	err = wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
+	err := wire.WriteMessage(conn, getBlocksMsg, wire.ProtocolVersion, netParams.Net)
 	if err != nil {
 		return fmt.Errorf("failed to send getblocks message: %v", err)
 	}
 	fmt.Println("Sent initial getblocks request")
 	fmt.Println("chain best height", chain.BestSnapshot().Height)
+	return nil
+}
 
+// processMessages: 메시지 수신 및 처리 루프/ 메시지 수신 루프를 관리. 각 메시지 타입에 맞는 핸들러 함수 호출.
+func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain, targetBlockHash *chainhash.Hash) error {
 	blocksInQueue := make(map[chainhash.Hash]struct{})
 
 	for {
 		fmt.Println("Waiting for message...")
-		msg, _, err := wire.ReadMessage(conn, 0, netParams.Net)
+		msg, _, err := wire.ReadMessage(conn, wire.ProtocolVersion, netParams.Net) // 0 → wire.ProtocolVersion
 		if err != nil {
 			log.Printf("Failed to read message: %v", err)
 			continue
@@ -214,114 +227,122 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 		fmt.Printf("Received message: %T\n", msg)
 
 		switch m := msg.(type) {
-		case *wire.MsgHeaders:
-			headerCount := len(m.Headers)
-			if headerCount > 0 {
-				peerHeight := currentHeight + int32(headerCount)
-				fmt.Printf("Peer reported %d headers up to target, estimated height: %d\n", headerCount, peerHeight)
-				// 수정: 포인터 메서드 호출 문제 해결
-				for _, header := range m.Headers {
-					headerHash := header.BlockHash()         // *chainhash.Hash
-					if headerHash.IsEqual(targetBlockHash) { // 둘 다 *Hash로 비교
-						fmt.Println("Target block found in peer headers")
-						break
-					}
-				}
-			} else {
-				fmt.Println("Peer returned no headers up to target")
-			}
-
 		case *wire.MsgInv:
-			fmt.Printf("MsgInv with %d items\n", len(m.InvList))
-			getDataMsg := wire.NewMsgGetData()
-			for i, inv := range m.InvList {
-				fmt.Printf(" - Item %d: %s\n", i, inv.Hash.String())
-				if inv.Type == wire.InvTypeBlock {
-					getDataMsg.AddInvVect(inv)
-					blocksInQueue[inv.Hash] = struct{}{}
-					fmt.Printf("Requested block: %s\n", inv.Hash.String())
-				}
-			}
-			if len(getDataMsg.InvList) == 0 {
-				fmt.Println("Empty InvList, requesting more blocks")
-				blockLocator = chain.BlockLocatorFromHash(&chain.BestSnapshot().Hash)
-				getBlocksMsg = &wire.MsgGetBlocks{
-					ProtocolVersion:    wire.ProtocolVersion,
-					BlockLocatorHashes: blockLocator,
-					HashStop:           *targetBlockHash,
-				}
-				err = wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
-				if err != nil {
-					return fmt.Errorf("failed to send additional getblocks: %v", err)
-				}
-				fmt.Println("Sent additional getblocks request")
-				continue
-			}
-			fmt.Printf("Sending getdata for %d blocks\n", len(getDataMsg.InvList))
-			err = wire.WriteMessage(conn, getDataMsg, 0, netParams.Net)
+			err = handleInvMessage(m, conn, netParams, blocksInQueue, chain, targetBlockHash)
 			if err != nil {
-				return fmt.Errorf("failed to send getdata message: %v", err)
-			}
-			fmt.Println("Sent getdata request")
-			fmt.Println("Current blocks in queue:", len(blocksInQueue))
-			for hash := range blocksInQueue {
-				fmt.Printf(" - Queued block: %s\n", hash.String())
+				return err
 			}
 
 		case *wire.MsgBlock:
-			block := btcutil.NewBlock(m)
-			delete(blocksInQueue, *block.Hash())
-			snapshot := chain.BestSnapshot()
-			fmt.Printf("best height %v, hash %v, got block %v\n",
-				snapshot.Height, snapshot.Hash, block.Hash())
-			isMainChain, _, err := chain.ProcessBlock(block, blockchain.BFNone)
-			if !isMainChain {
-				fmt.Printf("Received orphan block: %s, %v\n", block.Hash().String(), err)
-				continue
-			}
+			err = handleBlockMessage(m, chain, blocksInQueue, targetBlockHash, conn, netParams)
 			if err != nil {
-				fmt.Printf("block validation failed for %s: %v\n", block.Hash().String(), err)
-				continue
-			}
-			if targetBlockHash.IsEqual(block.Hash()) {
-				fmt.Println("Target block reached, exiting")
-				conn.Close()
-				os.Exit(0)
-			}
-
-			fmt.Println("chain best height", chain.BestSnapshot().Height)
-			fmt.Println("blocks in queue", len(blocksInQueue))
-
-			if len(blocksInQueue) == 0 {
-				fmt.Println("All requested blocks received")
-				haveTarget, err := chain.HaveBlock(targetBlockHash)
-				if err != nil {
-					log.Printf("Error checking target block existence: %v", err)
-					continue
-				}
-				if !haveTarget {
-					fmt.Println("Target not reached, sending new getblocks")
-					blockLocator = blockchain.BlockLocator([]*chainhash.Hash{block.Hash()})
-					fmt.Printf("locator %v, target %v\n", block.Hash(), targetBlockHash)
-					getBlocksMsg = &wire.MsgGetBlocks{
-						ProtocolVersion:    wire.ProtocolVersion,
-						BlockLocatorHashes: blockLocator,
-						HashStop:           *targetBlockHash,
-					}
-					err = wire.WriteMessage(conn, getBlocksMsg, 0, netParams.Net)
-					if err != nil {
-						return fmt.Errorf("failed to send next getblocks: %v", err)
-					}
-					fmt.Println("Sent additional getblocks request")
-				}
+				return err
 			}
 
 		case *wire.MsgReject:
-			fmt.Printf("Reject: %s\n", m.Reason)
-			return fmt.Errorf("rejected: %s", m.Reason)
+			return handleRejectMessage(m)
+
+		case *wire.MsgPing: // ping 메시지 처리 추가
+			fmt.Println("Received ping, sending pong")
+			pongMsg := wire.NewMsgPong(m.Nonce)
+			err = wire.WriteMessage(conn, pongMsg, wire.ProtocolVersion, netParams.Net)
+			if err != nil {
+				log.Printf("Failed to send pong: %v", err)
+			}
 
 		default:
 			fmt.Printf("Other message: %T\n", m)
 		}
 	}
+}
+
+// handleInvMessage: MsgInv 처리/ getdata 요청을 보내고, 빈 InvList일 때 추가 getblocks 요청
+func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params, blocksInQueue map[chainhash.Hash]struct{}, chain *blockchain.BlockChain, targetBlockHash *chainhash.Hash) error {
+	fmt.Printf("MsgInv with %d items\n", len(m.InvList))
+	getDataMsg := wire.NewMsgGetData()
+	for i, inv := range m.InvList {
+		fmt.Printf(" - Item %d: %s\n", i, inv.Hash.String())
+		if inv.Type == wire.InvTypeBlock {
+			getDataMsg.AddInvVect(inv)
+			blocksInQueue[inv.Hash] = struct{}{}
+		}
+	}
+	if len(getDataMsg.InvList) == 0 {
+		fmt.Println("Empty InvList, requesting more blocks")
+		blockLocator := chain.BlockLocatorFromHash(&chain.BestSnapshot().Hash)
+		getBlocksMsg := &wire.MsgGetBlocks{
+			ProtocolVersion:    wire.ProtocolVersion,
+			BlockLocatorHashes: blockLocator,
+			HashStop:           *targetBlockHash,
+		}
+		err := wire.WriteMessage(conn, getBlocksMsg, wire.ProtocolVersion, netParams.Net)
+		if err != nil {
+			return fmt.Errorf("failed to send additional getblocks: %v", err)
+		}
+		fmt.Println("Sent additional getblocks request")
+		return nil
+	}
+	fmt.Printf("Sending getdata for %d blocks\n", len(getDataMsg.InvList))
+	err := wire.WriteMessage(conn, getDataMsg, wire.ProtocolVersion, netParams.Net)
+	if err != nil {
+		return fmt.Errorf("failed to send getdata message: %v", err)
+	}
+	fmt.Println("Sent getdata request")
+	return nil
+}
+
+// handleBlockMessage: MsgBlock 처리/블록 검증, 체인 추가, 목표 블록 확인, 추가 요청 로직 포함
+func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksInQueue map[chainhash.Hash]struct{}, targetBlockHash *chainhash.Hash, conn net.Conn, netParams *chaincfg.Params) error {
+	block := btcutil.NewBlock(m)
+	delete(blocksInQueue, *block.Hash())
+	snapshot := chain.BestSnapshot()
+	fmt.Printf("best height %v, hash %v, got block %v\n",
+		snapshot.Height, snapshot.Hash, block.Hash())
+	isMainChain, _, err := chain.ProcessBlock(block, blockchain.BFNone) //error
+	if !isMainChain {
+		fmt.Printf("Received orphan block: %s, %v\n", block.Hash().String(), err)
+		parentHash := block.MsgBlock().Header.PrevBlock //orphan이면 부모 블록 묻ㄴㄴ거 추가가 이거
+		getDataMsg := wire.NewMsgGetData()
+		getDataMsg.AddInvVect(&wire.InvVect{Type: wire.InvTypeBlock, Hash: parentHash})
+		err = wire.WriteMessage(conn, getDataMsg, wire.ProtocolVersion, netParams.Net)
+		if err != nil {
+			return fmt.Errorf("failed to request parent block: %v", err)
+		}
+		fmt.Printf("Requested parent block: %s\n", parentHash.String())
+		blocksInQueue[parentHash] = struct{}{} //이까지
+		return nil
+	}
+	if err != nil {
+		fmt.Printf("block validation failed for %s: %v\n", block.Hash().String(), err)
+		return nil
+	}
+	if targetBlockHash.IsEqual(block.Hash()) {
+		fmt.Println("Target block reached, exiting")
+		conn.Close()
+		os.Exit(0)
+	}
+
+	fmt.Println("chain best height", chain.BestSnapshot().Height)
+	fmt.Println("blocks in queue", len(blocksInQueue))
+	if len(blocksInQueue) == 0 {
+		blockLocator := blockchain.BlockLocator([]*chainhash.Hash{block.Hash()})
+		fmt.Printf("locator %v, target %v\n", block.Hash(), targetBlockHash)
+		getBlocksMsg := &wire.MsgGetBlocks{
+			ProtocolVersion:    wire.ProtocolVersion,
+			BlockLocatorHashes: blockLocator,
+			HashStop:           *targetBlockHash,
+		}
+		err = wire.WriteMessage(conn, getBlocksMsg, wire.ProtocolVersion, netParams.Net)
+		if err != nil {
+			return fmt.Errorf("failed to send next getblocks: %v", err)
+		}
+		fmt.Println("Sent additional getblocks request")
+	}
+	return nil
+}
+
+// handleRejectMessage: MsgReject 처리/거부 메시지를 출력하고 에러 반환
+func handleRejectMessage(m *wire.MsgReject) error {
+	fmt.Printf("Reject: %s\n", m.Reason)
+	return fmt.Errorf("rejected: %s", m.Reason)
 }

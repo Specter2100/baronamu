@@ -213,7 +213,7 @@ func sendGetBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 	return nil
 }
 
-// processMessages: 메시지 수신 및 처리 루프/ 메시지 수신 루프를 관리. 각 메시지 타입에 맞는 핸들러 함수 호출.
+// processMessages: 메시지 수신 및 처리 루프/ 메시지 수신 루프를 관리. 각 메시지 타입에 맞는 핸들러 함수 호출. //여기서 걸리니 에러가 나오는거 아닌가 얘는 왜 processmessages를 go to def하면 중복되게 나오지??
 func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain, targetBlockHash *chainhash.Hash) error {
 	blocksInQueue := make(map[chainhash.Hash]struct{})
 
@@ -224,7 +224,7 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 			log.Printf("Failed to read message: %v", err)
 			continue
 		}
-		fmt.Printf("Received message: %T\n", msg)
+		fmt.Printf("Received message: %T\n", msg) //여기서 에러 메세지가 나오는데
 
 		switch m := msg.(type) {
 		case *wire.MsgInv:

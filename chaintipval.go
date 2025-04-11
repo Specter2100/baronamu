@@ -227,7 +227,7 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 		fmt.Printf("Received message: %T\n", msg) //여기서 에러 메세지가 나오는데
 
 		switch m := msg.(type) {
-		case *wire.MsgInv:
+		case *wire.MsgInv: //invmessage 받는 경우 1
 			err = handleInvMessage(m, conn, netParams, blocksInQueue, chain, targetBlockHash)
 			if err != nil {
 				return err
@@ -258,7 +258,7 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 
 // handleInvMessage: MsgInv 처리/ getdata 요청을 보내고, 빈 InvList일 때 추가 getblocks 요청
 func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params, blocksInQueue map[chainhash.Hash]struct{}, chain *blockchain.BlockChain, targetBlockHash *chainhash.Hash) error {
-	fmt.Printf("MsgInv with %d items\n", len(m.InvList))
+	fmt.Printf("MsgInv with %d items\n", len(m.InvList)) //invmessage 받는 경우 2
 	getDataMsg := wire.NewMsgGetData()
 	for i, inv := range m.InvList {
 		fmt.Printf(" - Item %d: %s\n", i, inv.Hash.String())
@@ -299,9 +299,10 @@ func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksIn
 	fmt.Printf("best height %v, hash %v, got block %v\n",
 		snapshot.Height, snapshot.Hash, block.Hash())
 	isMainChain, _, err := chain.ProcessBlock(block, blockchain.BFNone) //error
-	if !isMainChain {
+	if !isMainChain {                                                   //
 		fmt.Printf("Received orphan block: %s, %v\n", block.Hash().String(), err)
-		parentHash := block.MsgBlock().Header.PrevBlock //orphan이면 부모 블록 묻ㄴㄴ거 추가가 이거
+		parentHash := block.MsgBlock().Header.PrevBlock //orphan이면 부모 블록 묻ㄴㄴ거 추가가 이거 // os.exit 넣어보기 어떤 블록 받았는지 확인한 다음 다음 코드 짤 생각
+		os.Exit(0)                                      //나중에 뺄거거
 		getDataMsg := wire.NewMsgGetData()
 		getDataMsg.AddInvVect(&wire.InvVect{Type: wire.InvTypeBlock, Hash: parentHash})
 		err = wire.WriteMessage(conn, getDataMsg, wire.ProtocolVersion, netParams.Net)

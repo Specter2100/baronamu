@@ -314,8 +314,8 @@ func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksIn
 	snapshot := chain.BestSnapshot()                      //여기부터터
 	fmt.Printf("best height %v, hash %v, got block %v\n", // 얘가 wire.MsgBlock 다음 나오는 메세지
 		snapshot.Height, snapshot.Hash, block.Hash()) //여기까지 필요없는것 같은데..
-	isMainChain, _, err := chain.ProcessBlock(block, blockchain.BFNone) //error
-	if !isMainChain {
+	isMainChain, _, err := chain.ProcessBlock(block, blockchain.BFNone) //processblock 은 블록체인에 새로운 블록을 추가하는 주요요 함수
+	if !isMainChain {                                                   //메인 체인에 연결 안되면 참, 여기가 연결 실패 구분하는 첫 단계인가/ chain.ProcessBlock의 반환값으로, 블록이 메인 체인에 추가되었는지 타나냄
 		fmt.Printf("또 Received orphan block: %s, %v\n", block.Hash().String(), err)
 		parentHash := block.MsgBlock().Header.PrevBlock
 		fmt.Printf("Orphan block's parent hash: %s\n", parentHash.String()) //고아 블록의 부모 블록이 뭔지 확인하는 코드 추가

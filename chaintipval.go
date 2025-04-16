@@ -165,7 +165,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 // requestBlocks: 전체 흐름 관리
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
 	genesisHash := netParams.GenesisHash
-	targetBlockHash, err := chainhash.NewHashFromStr("000001f65b6d66bcbdfd67de47a09be3104a1aed07ee403f8942c872f87091bf")
+	targetBlockHash, err := chainhash.NewHashFromStr("000000f02e5556ab63882bcc7f759223be5975ea7d8f2782cd7be0a5b7300b0c")
 	if err != nil {
 		return fmt.Errorf("invalid target block hash: %v", err)
 	}
@@ -311,18 +311,18 @@ func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params,
 func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksInQueue map[chainhash.Hash]struct{}, targetBlockHash *chainhash.Hash, conn net.Conn, netParams *chaincfg.Params) error {
 	block := btcutil.NewBlock(m)
 	delete(blocksInQueue, *block.Hash())
-	snapshot := chain.BestSnapshot()                      //여기부터터
+	snapshot := chain.BestSnapshot()                      //로컬 한테서 snapshot을 찍는건데 여기서는 블록체인 패키지를 가져온거인데 최고 높이를 찍는거
 	fmt.Printf("best height %v, hash %v, got block %v\n", // 얘가 wire.MsgBlock 다음 나오는 메세지
-		snapshot.Height, snapshot.Hash, block.Hash()) //여기까지 필요없는것 같은데..
-	isMainChain, _, err := chain.ProcessBlock(block, blockchain.BFNone) //processblock 은 블록체인에 새로운 블록을 추가하는 주요요 함수
-	if !isMainChain {                                                   //메인 체인에 연결 안되면 참, 여기가 연결 실패 구분하는 첫 단계인가/ chain.ProcessBlock의 반환값으로, 블록이 메인 체인에 추가되었는지 타나냄
+		snapshot.Height, snapshot.Hash, block.Hash())
+	isMainChain, _, err := chain.ProcessBlock(block, blockchain.BFNone) //processblock 은 블록체인에 새로운 블록을 추가하는 주요 함수
+	if !isMainChain {                                                   // err면 실행==메인 체인에 연결 안되면 참, 여기가 연결 실패 구분하는 첫 단계인가/ chain.ProcessBlock의 반환값으로, 블록이 메인 체인에 추가되었는지 타나냄
 		fmt.Printf("또 Received orphan block: %s, %v\n", block.Hash().String(), err)
-		parentHash := block.MsgBlock().Header.PrevBlock
+		parentHash := block.MsgBlock().Header.PrevBlock                     //부모 블록해시를 정의하는 변수수
 		fmt.Printf("Orphan block's parent hash: %s\n", parentHash.String()) //고아 블록의 부모 블록이 뭔지 확인하는 코드 추가
-		os.Exit(0)                                                          // 나중에 삭제
-		getDataMsg := wire.NewMsgGetData()
-		getDataMsg.AddInvVect(&wire.InvVect{Type: wire.InvTypeBlock, Hash: parentHash})
-		err = wire.WriteMessage(conn, getDataMsg, wire.ProtocolVersion, netParams.Net)
+		//	os.Exit(0)                                                          // 나중에 삭제
+		getDataMsg := wire.NewMsgGetData()                                              //새로운 getdatamsg 요청
+		getDataMsg.AddInvVect(&wire.InvVect{Type: wire.InvTypeBlock, Hash: parentHash}) //블록데이터 요청, 부모 해시 부모 블록을 요청에 추가한다고? durltj typeblock 말고 InvTypeFilteredBlock쓰면 안되나? 로그 보기도 더 쉬운데
+		err = wire.WriteMessage(conn, getDataMsg, wire.ProtocolVersion, netParams.Net)  //피어에게 위에 메세지 달라고 요청
 		if err != nil {
 			return fmt.Errorf("failed to request parent block: %v", err)
 		}
@@ -333,7 +333,7 @@ func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksIn
 
 	if err != nil {
 		fmt.Printf("block validation failed for %s: %v\n", block.Hash().String(), err)
-		return nil
+		return nil //에러면 nil 반환하고 종료
 	}
 	if targetBlockHash.IsEqual(block.Hash()) {
 		fmt.Println("Target block reached, exiting")

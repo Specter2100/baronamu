@@ -321,7 +321,7 @@ func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksIn
 		fmt.Printf("Orphan block's parent hash: %s\n", parentHash.String()) //고아 블록의 부모 블록이 뭔지 확인하는 코드 추가
 		//	os.Exit(0)                                                          // 나중에 삭제
 		getDataMsg := wire.NewMsgGetData()                                              //새로운 getdatamsg 요청
-		getDataMsg.AddInvVect(&wire.InvVect{Type: wire.InvTypeBlock, Hash: parentHash}) //블록데이터 요청, 부모 해시 부모 블록을 요청에 추가한다고? durltj typeblock 말고 InvTypeFilteredBlock쓰면 안되나? 로그 보기도 더 쉬운데
+		getDataMsg.AddInvVect(&wire.InvVect{Type: wire.InvTypeBlock, Hash: parentHash}) //블록데이터 요청, 부모 해시 부모 블록을 요청에 추가한다고?
 		err = wire.WriteMessage(conn, getDataMsg, wire.ProtocolVersion, netParams.Net)  //피어에게 위에 메세지 달라고 요청
 		if err != nil {
 			return fmt.Errorf("failed to request parent block: %v", err)
@@ -329,7 +329,7 @@ func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksIn
 		fmt.Printf("Requested parent block: %s\n", parentHash.String())
 		blocksInQueue[parentHash] = struct{}{}
 		return nil
-	}
+	} //que는 tx가 대기되는 장소
 
 	if err != nil {
 		fmt.Printf("block validation failed for %s: %v\n", block.Hash().String(), err)
@@ -341,7 +341,7 @@ func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksIn
 		os.Exit(0)
 	}
 
-	fmt.Println("chain best height", chain.BestSnapshot().Height) //얘도 없어도 되겠는데데
+	fmt.Println("chain best height", chain.BestSnapshot().Height)
 	fmt.Println("blocks in queue", len(blocksInQueue))
 	if len(blocksInQueue) == 0 {
 		blockLocator := blockchain.BlockLocator([]*chainhash.Hash{block.Hash()})

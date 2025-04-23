@@ -2,6 +2,7 @@ package main
 
 // 노드와 연결-블록 받기-검증-시스템 종료
 import (
+	"bytes"
 	"flag"
 	"fmt"
 	"log"
@@ -123,11 +124,13 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 	localAddr := conn.LocalAddr().(*net.TCPAddr)
 	remoteAddr := conn.RemoteAddr().(*net.TCPAddr)
 
+	// SegWit 지원을 명시적으로 알리기 위해 서비스 플래그 추가
+	services := wire.SFNodeNetwork | wire.SFNodeWitness
 	verMsg := wire.NewMsgVersion(
-		wire.NewNetAddressIPPort(localAddr.IP, uint16(localAddr.Port), wire.SFNodeNetworkLimited),
+		wire.NewNetAddressIPPort(localAddr.IP, uint16(localAddr.Port), wire.SFNodeNetwork|wire.SFNodeWitness),
 		wire.NewNetAddressIPPort(remoteAddr.IP, uint16(remoteAddr.Port), 0),
-		0,                         // nonce
-		wire.SFNodeNetworkLimited, // services
+		0,               // nonce
+		int32(services), // SegWit 지원 서비스 플래그 (wire.SFNodeNetwork|wire.SFNodeWitness로 두어 발생한 에러를 따로 service를 정의하고 int32로 캐스팅 )
 	)
 
 	err = wire.WriteMessage(conn, verMsg, wire.ProtocolVersion, netParams.Net)
@@ -271,7 +274,7 @@ func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params,
 	getDataMsg := wire.NewMsgGetData()
 	for i, inv := range m.InvList {
 		fmt.Printf(" - Item %d: %s\n", i, inv.Hash.String())
-		if inv.Type == wire.InvTypeBlock {
+		if inv.Type == wire.InvTypeBlock || inv.Type == wire.InvTypeWitnessBlock {
 			// 블록 높이를 확인해서 로그 출력
 			height, err := chain.BlockHeightByHash(&inv.Hash)
 			if err != nil {
@@ -279,7 +282,11 @@ func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params,
 			} else {
 				fmt.Printf(" - Block %s is at height %d\n", inv.Hash, height)
 			}
-			getDataMsg.AddInvVect(inv)
+			// SegWit 블록을 요청하기 위해 InvTypeWitnessBlock 사용
+			getDataMsg.AddInvVect(&wire.InvVect{
+				Type: wire.InvTypeWitnessBlock,
+				Hash: inv.Hash,
+			})
 			blocksInQueue[inv.Hash] = struct{}{}
 		}
 	}
@@ -311,39 +318,70 @@ func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params,
 func checkCoinbaseWitness(block *btcutil.Block, netParams *chaincfg.Params) {
 	fmt.Printf("Checking coinbase transaction for block %s\n", block.Hash().String())
 
-	if len(block.Transactions()) == 0 {
+	transactions := block.MsgBlock().Transactions
+	fmt.Printf("Debug: Transaction count: %d\n", len(transactions))
+	if len(transactions) == 0 {
 		fmt.Println("Warning: No transactions in block")
+		f, _ := os.OpenFile("invalid_blocks.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		defer f.Close()
+		f.WriteString(fmt.Sprintf("Block %s: No transactions\n", block.Hash().String()))
 		return
 	}
 
-	coinbaseTx := block.MsgBlock().Transactions[0]
-	fmt.Printf("Coinbase tx outputs: %d\n", len(coinbaseTx.TxOut))
-	fmt.Printf("Coinbase tx inputs: %d\n", len(coinbaseTx.TxIn))
+	coinbaseTx := transactions[0]
+	fmt.Printf("Debug: Coinbase tx details: version=%d, locktime=%d, inputs=%d, outputs=%d\n",
+		coinbaseTx.Version, coinbaseTx.LockTime, len(coinbaseTx.TxIn), len(coinbaseTx.TxOut))
 	if len(coinbaseTx.TxIn) > 0 {
-		fmt.Printf("Coinbase tx input[0] SignatureScript: %x\n", coinbaseTx.TxIn[0].SignatureScript)
-		fmt.Printf("Coinbase tx input[0] PreviousOutPoint: %s\n", coinbaseTx.TxIn[0].PreviousOutPoint.String())
+		fmt.Printf("Debug: TxIn[0]: PreviousOutPoint.Hash=%x, PreviousOutPoint.Index=%d, SignatureScript=%x\n",
+			coinbaseTx.TxIn[0].PreviousOutPoint.Hash[:], coinbaseTx.TxIn[0].PreviousOutPoint.Index, coinbaseTx.TxIn[0].SignatureScript)
+	} else {
+		fmt.Printf("Error: Coinbase tx has no TxIn, invalid for block %s\n", block.Hash().String())
+		f, _ := os.OpenFile("invalid_coinbase.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		defer f.Close()
+		f.WriteString(fmt.Sprintf("Block %s: No TxIn in coinbase\n", block.Hash().String()))
+	}
+	for i, out := range coinbaseTx.TxOut {
+		fmt.Printf("Debug: TxOut[%d]: value=%d, scriptPubKey=%x\n", i, out.Value, out.PkScript)
+	}
+
+	var buf bytes.Buffer
+	err := coinbaseTx.Serialize(&buf)
+	if err != nil {
+		fmt.Printf("Error: Failed to serialize coinbase tx: %v\n", err)
+		f, _ := os.OpenFile("invalid_coinbase.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		defer f.Close()
+		f.WriteString(fmt.Sprintf("Block %s: Failed to serialize coinbase tx: %v\n", block.Hash().String(), err))
+	} else {
+		fmt.Printf("Debug: Coinbase tx raw data: %x\n", buf.Bytes())
 	}
 
 	witnessCommitmentFound := false
 	for i, out := range coinbaseTx.TxOut {
 		fmt.Printf("Output %d: value=%v, scriptPubKey=%x\n", i, out.Value, out.PkScript)
-		if len(out.PkScript) >= 38 && out.PkScript[0] == 0x6a && out.PkScript[1] == 0x24 {
-			fmt.Printf("Witness commitment found: %x\n", out.PkScript[2:38])
-			fmt.Printf("Debug: Witness commitment details - Prefix: aa21a9ed, Merkle Root: %x\n", out.PkScript[6:38])
-			witnessCommitmentFound = true
-		} else if out.PkScript[0] == 0x6a {
-			asciiData := string(out.PkScript[2:])
-			fmt.Printf("OP_RETURN data (ASCII): %s\n", asciiData)
-			if len(out.PkScript[2:]) > 80 {
-				fmt.Printf("Warning: OP_RETURN data exceeds 80 bytes: %d bytes\n", len(out.PkScript[2:]))
+		if len(out.PkScript) >= 2 && out.PkScript[0] == 0x6a {
+			if len(out.PkScript) >= 38 && out.PkScript[1] == 0x24 {
+				fmt.Printf("Witness commitment found: %x\n", out.PkScript[2:38])
+				fmt.Printf("Debug: Witness commitment details - Prefix: aa21a9ed, Merkle Root: %x\n", out.PkScript[6:38])
+				witnessCommitmentFound = true
+			} else {
+				asciiData := string(out.PkScript[2:])
+				fmt.Printf("OP_RETURN data (ASCII): %s\n", asciiData)
+				if len(out.PkScript[2:]) > 80 {
+					fmt.Printf("Warning: OP_RETURN data exceeds 80 bytes: %d bytes\n", len(out.PkScript[2:]))
+				}
 			}
+		} else {
+			fmt.Printf("Debug: Skipping invalid scriptPubKey for output %d, length=%d\n", i, len(out.PkScript))
+			f, _ := os.OpenFile("invalid_scriptpubkey.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			defer f.Close()
+			f.WriteString(fmt.Sprintf("Block %s, Output %d: Invalid scriptPubKey, length=%d, data=%x\n", block.Hash().String(), i, len(out.PkScript), out.PkScript))
 		}
 	}
 	if !witnessCommitmentFound {
 		fmt.Println("Warning: Witness commitment not found in coinbase transaction")
 		fmt.Println("Debug: Non-SegWit block detected, may be accepted by legacy nodes")
 	} else {
-		fmt.Println("Debug: SegWit block detected, but witness stack may be non-standard due to soft fork")
+		fmt.Println("Debug: SegWit block detected")
 	}
 
 	if len(coinbaseTx.TxIn) > 0 {
@@ -352,7 +390,6 @@ func checkCoinbaseWitness(block *btcutil.Block, netParams *chaincfg.Params) {
 		if len(witnessStack) != 1 {
 			fmt.Printf("Warning: Invalid witness stack size: %d (expected 1)\n", len(witnessStack))
 			fmt.Printf("Debug: BIP 141 violation - Non-standard SegWit block, block %s\n", block.Hash().String())
-			fmt.Printf("Debug: Coinbase tx details - Version: %d, LockTime: %d\n", coinbaseTx.Version, coinbaseTx.LockTime)
 			f, _ := os.OpenFile("nonstd_blocks.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 			defer f.Close()
 			f.WriteString(fmt.Sprintf("Block %s: Invalid witness stack size %d\n", block.Hash().String(), len(witnessStack)))
@@ -375,17 +412,47 @@ func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksIn
 	delete(blocksInQueue, *block.Hash())
 	snapshot := chain.BestSnapshot()
 	fmt.Printf("best height %v, hash %v, got block %v\n", snapshot.Height, snapshot.Hash, block.Hash())
+	fmt.Printf("Debug: Block transaction count: %d, parent hash: %s\n", len(m.Transactions), m.Header.PrevBlock.String())
+
+	// 블록 데이터 검증
+	if len(block.MsgBlock().Transactions) == 0 {
+		fmt.Printf("Error: Block %s has no transactions, skipping\n", block.Hash().String())
+		f, _ := os.OpenFile("invalid_blocks.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		defer f.Close()
+		f.WriteString(fmt.Sprintf("Block %s: No transactions, parent: %s\n", block.Hash().String(), m.Header.PrevBlock.String()))
+		return nil
+	}
+
+	// 코인베이스 트랜잭션 검증
+	coinbaseTx := block.MsgBlock().Transactions[0]
+	if len(coinbaseTx.TxIn) != 0 || len(coinbaseTx.TxOut) == 0 {
+		fmt.Printf("Error: Invalid coinbase transaction in block %s: inputs=%d, outputs=%d\n", block.Hash().String(), len(coinbaseTx.TxIn), len(coinbaseTx.TxOut))
+		f, _ := os.OpenFile("invalid_coinbase.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		defer f.Close()
+		var buf bytes.Buffer
+		err := coinbaseTx.Serialize(&buf)
+		if err != nil {
+			f.WriteString(fmt.Sprintf("Block %s: Invalid coinbase, inputs=%d, outputs=%d, serialize error=%v\n", block.Hash().String(), len(coinbaseTx.TxIn), len(coinbaseTx.TxOut), err))
+		} else {
+			f.WriteString(fmt.Sprintf("Block %s: Invalid coinbase, inputs=%d, outputs=%d, raw=%x\n", block.Hash().String(), len(coinbaseTx.TxIn), len(coinbaseTx.TxOut), buf.Bytes()))
+		}
+		return nil
+	}
 
 	// 코인베이스 트랜잭션의 Witness 데이터 검증 및 디버깅
 	checkCoinbaseWitness(block, netParams)
 
+	// BFNone 사용
 	isMainChain, _, err := chain.ProcessBlock(block, blockchain.BFNone)
 	if !isMainChain {
 		fmt.Printf("Received orphan block: %s, %v\n", block.Hash().String(), err)
 		parentHash := block.MsgBlock().Header.PrevBlock
 		fmt.Printf("Orphan block's parent hash: %s\n", parentHash.String())
 		getDataMsg := wire.NewMsgGetData()
-		getDataMsg.AddInvVect(&wire.InvVect{Type: wire.InvTypeBlock, Hash: parentHash})
+		getDataMsg.AddInvVect(&wire.InvVect{
+			Type: wire.InvTypeWitnessBlock,
+			Hash: parentHash,
+		})
 		err = wire.WriteMessage(conn, getDataMsg, wire.ProtocolVersion, netParams.Net)
 		if err != nil {
 			return fmt.Errorf("failed to request parent block: %v", err)
@@ -397,9 +464,10 @@ func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksIn
 
 	if err != nil {
 		fmt.Printf("block validation failed for %s: %v\n", block.Hash().String(), err)
+		fmt.Printf("Error details: %+v\n", err)
 		return nil
 	}
-	if targetBlockHash.IsEqual(block.Hash()) {
+	if targetBlockHash.IsEqual(block.Hash()) { //Hash가 아니라 Height로 바꿔야할수도?
 		fmt.Println("Target block reached, exiting")
 		conn.Close()
 		os.Exit(0)

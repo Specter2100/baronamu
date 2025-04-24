@@ -265,7 +265,7 @@ func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params,
 	getDataMsg := wire.NewMsgGetData()
 	for i, inv := range m.InvList {
 		fmt.Printf(" - Item %d: %s\n", i, inv.Hash.String())
-		if inv.Type == wire.InvTypeWitnessBlock {
+		if inv.Type == wire.InvTypeBlock || inv.Type == wire.InvTypeWitnessBlock {
 			// 블록 높이를 확인해서 로그 출력
 			height, err := chain.BlockHeightByHash(&inv.Hash)
 			if err != nil {
@@ -274,7 +274,7 @@ func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params,
 				fmt.Printf(" - Block %s is at height %d\n", inv.Hash, height)
 			}
 			getDataMsg.AddInvVect(&wire.InvVect{
-				Type: wire.InvTypeWitnessBlock,
+				Type: inv.Type,
 				Hash: inv.Hash,
 			})
 			blocksInQueue[inv.Hash] = struct{}{}

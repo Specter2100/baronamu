@@ -1,6 +1,6 @@
 package main
 
-// 노드와 연결-블록 받기-검증-시스템 종료
+// 노드와 연결-블록 받기-검증-시스템 종료료
 import (
 	"flag"
 	"fmt"
@@ -222,21 +222,21 @@ func sendGetBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 	return nil
 }
 
-// processMessages: 메시지 수신 및 처리 루프/ 메시지 수신 루프를 관리. 각 메시지 타입에 맞는 핸들러 함수 호출.
+// processMessages: 메시지 수신 및 처리 루프/ 메시지 수신 루프를 관리. 각 메시지 타입에 맞는 핸들러 함수 호출. //여기서 걸리니 에러가 나오는거 아닌가 얘는 왜 processmessages를 go to def하면 중복되게 나오지??
 func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain, targetBlockHash *chainhash.Hash) error {
-	blocksInQueue := make(map[chainhash.Hash]struct{}) // 요청 중인 블록 해시를 추적
+	blocksInQueue := make(map[chainhash.Hash]struct{}) //요청 중인 블록 해시를 추적하는거
 
 	for {
-		fmt.Println("Waiting for message...")
-		msg, _, err := wire.ReadMessage(conn, wire.ProtocolVersion, netParams.Net)
+		fmt.Println("Waiting for message...")                                      //500개 요청 보내고 대기
+		msg, _, err := wire.ReadMessage(conn, wire.ProtocolVersion, netParams.Net) // 0 → wire.ProtocolVersion
 		if err != nil {
 			log.Printf("Failed to read message: %v", err)
 			continue
 		}
-		fmt.Printf("Received message: %T\n", msg)
+		fmt.Printf("Received message: %T\n", msg) //여기서 에러 메세지가 나오는데
 
 		switch m := msg.(type) {
-		case *wire.MsgInv:
+		case *wire.MsgInv: //invmessage 받는 경우 MsgInv 말하는거
 			err = handleInvMessage(m, conn, netParams, blocksInQueue, chain, targetBlockHash)
 			if err != nil {
 				return err
@@ -251,7 +251,7 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 		case *wire.MsgReject:
 			return handleRejectMessage(m)
 
-		case *wire.MsgPing:
+		case *wire.MsgPing: // ping 메시지 처리 추가
 			fmt.Println("Received ping, sending pong")
 			pongMsg := wire.NewMsgPong(m.Nonce)
 			err = wire.WriteMessage(conn, pongMsg, wire.ProtocolVersion, netParams.Net)
@@ -267,7 +267,7 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 
 // handleInvMessage: MsgInv 처리/ getdata 요청을 보내고, 빈 InvList일 때 추가 getblocks 요청
 func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params, blocksInQueue map[chainhash.Hash]struct{}, chain *blockchain.BlockChain, targetBlockHash *chainhash.Hash) error {
-	fmt.Printf("MsgInv with %d items\n", len(m.InvList))
+	fmt.Printf("MsgInv with %d items\n", len(m.InvList)) //추가 500개 요청하면 여기로 다시 넘어옴
 	getDataMsg := wire.NewMsgGetData()
 	for i, inv := range m.InvList {
 		fmt.Printf(" - Item %d: %s\n", i, inv.Hash.String())
@@ -279,7 +279,10 @@ func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params,
 			} else {
 				fmt.Printf(" - Block %s is at height %d\n", inv.Hash, height)
 			}
-			getDataMsg.AddInvVect(inv)
+			getDataMsg.AddInvVect(&wire.InvVect{
+				Type: wire.InvTypeWitnessBlock, // 증인 데이터 포함하도록 invtypeblock 말고 witness로 수정완
+				Hash: inv.Hash,
+			})
 			blocksInQueue[inv.Hash] = struct{}{}
 		}
 	}
@@ -288,14 +291,14 @@ func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params,
 		blockLocator := chain.BlockLocatorFromHash(&chain.BestSnapshot().Hash)
 		getBlocksMsg := &wire.MsgGetBlocks{
 			ProtocolVersion:    wire.ProtocolVersion,
-			BlockLocatorHashes: blockLocator,
+			BlockLocatorHashes: blockLocator, //나한테서 체인팁을 요청함
 			HashStop:           *targetBlockHash,
 		}
 		err := wire.WriteMessage(conn, getBlocksMsg, wire.ProtocolVersion, netParams.Net)
 		if err != nil {
 			return fmt.Errorf("failed to send additional getblocks: %v", err)
 		}
-		fmt.Println("Sent additional getblocks request")
+		fmt.Println("500개 더 보내라고 요청.Sent additional getblocks request") //500개 받고 나면 여기서 추가로 블록 요청한다고 보냄
 		return nil
 	}
 	fmt.Printf("Sending getdata for %d blocks\n", len(getDataMsg.InvList))
@@ -307,66 +310,75 @@ func handleInvMessage(m *wire.MsgInv, conn net.Conn, netParams *chaincfg.Params,
 	return nil
 }
 
-// checkCoinbaseWitness: 코인베이스 트랜잭션의 witness 데이터 검증 및 디버깅 로그 출력
-func checkCoinbaseWitness(block *btcutil.Block, netParams *chaincfg.Params) {
-	fmt.Printf("Checking coinbase transaction for block %s\n", block.Hash().String())
-
+// witness 검사하는 로직으로 32바이트 1개 아니면 에러 나오게 작성
+func checkCoinbaseWitness(block *btcutil.Block, netParams *chaincfg.Params) (bool, error) {
 	if len(block.Transactions()) == 0 {
-		fmt.Println("Warning: No transactions in block")
-		return
+		return false, fmt.Errorf("no transactions in block %s", block.Hash().String())
 	}
-
 	coinbaseTx := block.MsgBlock().Transactions[0]
-	fmt.Printf("Coinbase tx outputs: %d\n", len(coinbaseTx.TxOut))
-	fmt.Printf("Coinbase tx inputs: %d\n", len(coinbaseTx.TxIn))
-	if len(coinbaseTx.TxIn) > 0 {
-		fmt.Printf("Coinbase tx input[0] SignatureScript: %x\n", coinbaseTx.TxIn[0].SignatureScript)
-		fmt.Printf("Coinbase tx input[0] PreviousOutPoint: %s\n", coinbaseTx.TxIn[0].PreviousOutPoint.String())
+	fmt.Printf("Coinbase tx inputs: %d in block %s\n", len(coinbaseTx.TxIn), block.Hash().String())
+	if len(coinbaseTx.TxIn) == 0 {
+		return false, fmt.Errorf("coinbase transaction has no inputs in block %s", block.Hash().String())
 	}
 
-	witnessCommitmentFound := false
-	for i, out := range coinbaseTx.TxOut {
-		fmt.Printf("Output %d: value=%v, scriptPubKey=%x\n", i, out.Value, out.PkScript)
-		if len(out.PkScript) >= 38 && out.PkScript[0] == 0x6a && out.PkScript[1] == 0x24 {
-			fmt.Printf("Witness commitment found: %x\n", out.PkScript[2:38])
-			fmt.Printf("Debug: Witness commitment details - Prefix: aa21a9ed, Merkle Root: %x\n", out.PkScript[6:38])
-			witnessCommitmentFound = true
-		} else if out.PkScript[0] == 0x6a {
-			asciiData := string(out.PkScript[2:])
-			fmt.Printf("OP_RETURN data (ASCII): %s\n", asciiData)
-			if len(out.PkScript[2:]) > 80 {
-				fmt.Printf("Warning: OP_RETURN data exceeds 80 bytes: %d bytes\n", len(out.PkScript[2:]))
-			}
-		}
-	}
-	if !witnessCommitmentFound {
-		fmt.Println("Warning: Witness commitment not found in coinbase transaction")
-		fmt.Println("Debug: Non-SegWit block detected, may be accepted by legacy nodes")
-	} else {
-		fmt.Println("Debug: SegWit block detected, but witness stack may be non-standard due to soft fork")
-	}
+	// 블록 높이와 해시 로그
+	blockHeight := block.Height()
+	fmt.Printf("Processing block %s at height %d\n", block.Hash().String(), blockHeight)
 
-	if len(coinbaseTx.TxIn) > 0 {
+	// 제네시스 블록 확인
+	if blockHeight == 0 {
 		witnessStack := coinbaseTx.TxIn[0].Witness
-		fmt.Printf("Coinbase tx witness stack: %v\n", witnessStack)
-		if len(witnessStack) != 1 {
-			fmt.Printf("Warning: Invalid witness stack size: %d (expected 1)\n", len(witnessStack))
-			fmt.Printf("Debug: BIP 141 violation - Non-standard SegWit block, block %s\n", block.Hash().String())
-			fmt.Printf("Debug: Coinbase tx details - Version: %d, LockTime: %d\n", coinbaseTx.Version, coinbaseTx.LockTime)
-			f, _ := os.OpenFile("nonstd_blocks.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			defer f.Close()
-			f.WriteString(fmt.Sprintf("Block %s: Invalid witness stack size %d\n", block.Hash().String(), len(witnessStack)))
-		} else if len(witnessStack[0]) != 32 {
-			fmt.Printf("Warning: Invalid witness stack item length: %d (expected 32 bytes)\n", len(witnessStack[0]))
-		} else {
-			fmt.Printf("Witness stack valid: %x\n", witnessStack[0])
+		fmt.Printf("Genesis block detected, witness stack size: %d in block %s\n", len(witnessStack), block.Hash().String())
+		// Signet 제네시스: witness 1
+		if netParams.Name == chaincfg.SigNetParams.Name {
+			if len(witnessStack) == 1 && len(witnessStack[0]) == 32 {
+				fmt.Printf("Accepting witness stack size 1 as standard for Signet genesis block %s\n", block.Hash().String())
+				fmt.Printf("Witness stack data: %x\n", witnessStack[0])
+				return true, nil
+			}
+			return false, fmt.Errorf("non-standard witness stack: expected 1 item of 32 bytes for Signet genesis block, got %d items in block %s", len(witnessStack), block.Hash().String())
 		}
-	} else {
-		fmt.Println("Warning: Coinbase transaction has no inputs")
-		fmt.Printf("Debug: BIP 141 violation - Non-standard SegWit block, block %s\n", block.Hash().String())
+		// 메인넷 제네시스: witness 0
+		if len(witnessStack) == 0 {
+			fmt.Printf("Accepting witness stack size 0 as standard for mainnet genesis block %s\n", block.Hash().String())
+			return true, nil
+		}
+		return false, fmt.Errorf("non-standard witness stack: expected 0 items for mainnet genesis block, got %d items in block %s", len(witnessStack), block.Hash().String())
 	}
 
-	fmt.Printf("Debug: Pre-connection state for block %s, parent hash %s\n", block.Hash().String(), block.MsgBlock().Header.PrevBlock.String())
+	// 세그윗 트랜잭션 확인
+	hasWitnessCommitment := false
+	for _, out := range coinbaseTx.TxOut {
+		if len(out.PkScript) >= 38 && out.PkScript[0] == 0x6a && out.PkScript[1] == 0x24 {
+			hasWitnessCommitment = true
+			fmt.Printf("Witness commitment found in block %s: %x\n", block.Hash().String(), out.PkScript[2:38])
+			break
+		}
+	}
+
+	witnessStack := coinbaseTx.TxIn[0].Witness
+	fmt.Printf("Witness stack size: %d in block %s\n", len(witnessStack), block.Hash().String())
+
+	// Signet: 증인 약속 필수
+	if netParams.Name == chaincfg.SigNetParams.Name && !hasWitnessCommitment {
+		return false, fmt.Errorf("non-standard block: witness commitment required for Signet in block %s", block.Hash().String())
+	}
+
+	// 비세그윗 블록 (메인넷): 증인 스택 0 허용
+	if !hasWitnessCommitment {
+		if len(witnessStack) == 0 {
+			fmt.Printf("No witness commitment, accepting witness stack size 0 as standard for non-SegWit block %s\n", block.Hash().String())
+			return true, nil
+		}
+		return false, fmt.Errorf("non-standard witness stack: expected 0 items for non-SegWit block, got %d items in block %s", len(witnessStack), block.Hash().String())
+	}
+
+	// 세그윗 블록: 증인 스택 1개/32바이트 확인
+	if len(witnessStack) != 1 || len(witnessStack[0]) != 32 {
+		return false, fmt.Errorf("non-standard witness stack: expected 1 item of 32 bytes, got %d items in block %s", len(witnessStack), block.Hash().String())
+	}
+	fmt.Printf("Witness stack data: %x\n", witnessStack[0])
+	return true, nil
 }
 
 // handleBlockMessage: MsgBlock 처리/블록 검증, 체인 추가, 목표 블록 확인, 추가 요청 로직 포함, 수신된 블록 메시지를 처리하여 체인에 추가하고, 동기화 상태를 관리하며, 타겟 블록에 도달했는지 확인
@@ -376,8 +388,12 @@ func handleBlockMessage(m *wire.MsgBlock, chain *blockchain.BlockChain, blocksIn
 	snapshot := chain.BestSnapshot()
 	fmt.Printf("best height %v, hash %v, got block %v\n", snapshot.Height, snapshot.Hash, block.Hash())
 
-	// 코인베이스 트랜잭션의 Witness 데이터 검증 및 디버깅
-	checkCoinbaseWitness(block, netParams)
+	// 증인 스택 검사
+	isValid, err := checkCoinbaseWitness(block, netParams)
+	if err != nil || !isValid {
+		fmt.Printf("Witness check failed for block %s: %v\n", block.Hash().String(), err)
+		return nil
+	}
 
 	isMainChain, _, err := chain.ProcessBlock(block, blockchain.BFNone)
 	if !isMainChain {

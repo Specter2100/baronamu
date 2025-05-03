@@ -308,6 +308,7 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 	}
 	return nil
 }
+func handleUtreexo()
 
 // handleRejectMessage: MsgReject 처리/거부 메시지를 출력하고 에러 반환
 func handleRejectMessage(m *wire.MsgReject) error {

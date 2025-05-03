@@ -93,12 +93,15 @@ func main() {
 	}
 	defer db.Close()
 
+	var utreexo *blockchain.UtreexoViewpoint //utreexoview를 위해 정의
+	utreexo = blockchain.NewUtreexoViewpoint()
+
 	// Blockchain 초기화
 	chain, err := blockchain.New(&blockchain.Config{
 		DB:          db,
 		ChainParams: netParams,
 		TimeSource:  blockchain.NewMedianTime(),
-		//UtreexoView: nil,
+		UtreexoView: utreexo, //utreexoview를 만들어서 넣어야함, 어떻게 할 수 있을까, 만드는건 다른 레포지토리에서 하고 있으니 utreexod 라이브러리에 가서
 		//Checkpoints: netParams.Checkpoints,
 		Interrupt: nil,
 	})

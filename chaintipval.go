@@ -1,6 +1,6 @@
 package main
 
-// 노드와 연결-블록 받기-검증-시스템 종료료
+// 노드와 연결-블록 받기-검증-시스템 종료
 import (
 	"flag"
 	"fmt"
@@ -74,6 +74,7 @@ func main() {
 	fmt.Printf("Connecting to node: %s\n", fullAddress)
 
 	// 데이터베이스 경로 설정
+	//Fast Filtered Level Data Base
 	dbPath := filepath.Join(dataDir, "blocks_ffldb")
 
 	// 데이터베이스 없으면 생성
@@ -101,9 +102,9 @@ func main() {
 		DB:          db,
 		ChainParams: netParams,
 		TimeSource:  blockchain.NewMedianTime(),
-		UtreexoView: utreexo, //utreexoview를 만들어서 넣어야함, 어떻게 할 수 있을까, 만드는건 다른 레포지토리에서 하고 있으니 utreexod 라이브러리에 가서
-		//Checkpoints: netParams.Checkpoints,
-		Interrupt: nil,
+		UtreexoView: utreexo,               //utreexoview를 만들어서 넣어야함, 어떻게 할 수 있을까, 만드는건 다른 레포지토리에서 하고 있으니 utreexod 라이브러리에 가서
+		Checkpoints: netParams.Checkpoints, // 빠른 동기화, 안정성 등 장점밖에 없는데 그냥 기본적으로 작동되게 넣어두면 안되나?
+		Interrupt:   nil,
 	})
 	if err != nil {
 		log.Fatalf("Failed to create blockchain: %v", err)
@@ -162,7 +163,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 // 핸드쉐이크 완료 후 블록 요청 과정으로 블록 요청 하나하나 보는
 // requestBlocks: 전체 흐름 관리
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
-	targetBlockHash, err := chainhash.NewHashFromStr("00000002d38fc984fa25a057930af276c00a001428bd68b8216f826d580a382f")
+	targetBlockHash, err := chainhash.NewHashFromStr("000000ade699ac51fe9f23005115eccafe986e9d0c97f87403579698d31f1692")
 	if err != nil {
 		return fmt.Errorf("invalid target block hash: %v", err)
 	}
@@ -308,7 +309,47 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 	}
 	return nil
 }
-func handleUtreexo()
+
+func handleUtreexo(proof *wire.MsgUtreexoProof, utreexo *blockchain.UtreexoViewpoint, targetRootHash *chainhash.Hash, conn net.Conn) error {
+	// 예상 과정: 위에서 연결은 다 했고 해당 함수에서는 메세지를 처리하면 됨
+	// UTREEXO 증명 데이터 확인 → 증명 데이터 검증 → 축적기 상태 업데이트 → 목표 상태 확인 → 연결 관리
+	//각 파라미터 역할: UTREEXO 헤더 가져오기, , , UTREEXO노드와 연결하다가 목표 도달시 연결 종료
+	blockHash := proof.BlockHash
+	if blockHash=nil
+	fmt.Print("UTREEXO Block Hash is not correct")
+
+	// 디버깅 해야한다면 fmt.Printf("Handling Utreexo proof for block %s, target root %s\n", blockHash.String(), targetRootHash.String())
+
+	// 증명 검증
+	// 실제 메서드명은 blockchain/utreexo 패키지 확인 필요
+	// 예: go doc github.com/utreexo/utreexod/blockchain UtreexoViewpoint
+	// 예상 메서드: VerifyProof(proof *wire.MsgUtreexoProof, blockHash *chainhash.Hash) error
+	err := utreexo.VerifyProof(proof, blockHash)
+	if err != nil {
+		return fmt.Errorf("Utreexo proof verification failed for block %s: %v", blockHash.String(), err)
+	}
+
+	// 상태 업데이트
+	// 실제 필드명(Proof)과 메서드명(Modify) 확인 필요
+	// 예상: Proof []byte, Modify(proof []byte, blockHash *chainhash.Hash) error
+	err = utreexo.Modify(proof.Proof, blockHash)
+	if err != nil {
+		return fmt.Errorf("Utreexo state update failed for block %s: %v", blockHash.String(), err)
+	}
+
+	// 목표 상태 확인
+	// 예상 메서드: GetRoots() []*chainhash.Hash
+	currentRoots := utreexo.GetRoots()
+	for _, root := range currentRoots {
+		if root.IsEqual(targetRootHash) {
+			fmt.Println("Target Utreexo state reached, exiting")
+			conn.Close()
+			os.Exit(0)
+		}
+	}
+
+	return nil
+}
 
 // handleRejectMessage: MsgReject 처리/거부 메시지를 출력하고 에러 반환
 func handleRejectMessage(m *wire.MsgReject) error {

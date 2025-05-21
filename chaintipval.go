@@ -224,7 +224,14 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 			if err != nil {
 				return err
 			}
-
+		case *wire.MsgUtreexoProof: //새로 추가
+            // Utreexo 증명 메시지 처리 (별도 전송 시)
+            fmt.Printf("Received Utreexo proof for block %s\n", m.BlockHash.String())
+            // handleUtreexo 함수 호출 (기존 코드 재사용)
+            err = handleUtreexo(m, chain.UtreexoView(), targetBlockHash, conn)
+            if err != nil {
+                return fmt.Errorf("failed to handle Utreexo proof: %v", err)
+            }//여기까지
 		case *wire.MsgReject:
 			return handleRejectMessage(m)
 
@@ -251,7 +258,9 @@ func handleInvMessage(m *wire.MsgInv, chain *blockchain.BlockChain, conn net.Con
 			if chain.IsKnownOrphan(&inv.Hash) {
 				continue
 			}
-			inv.Type = wire.InvTypeWitnessBlock
+			if inv.Type == wire.InvTypeBlock || inv.Type == wire.InvTypeWitnessBlock { //inv.Type==wire.InvTypeBlock 에서 수정
+				// Utreexo 증명과 세그윗 데이터를 포함한 블록 요청
+				iv := wire.NewInvVect(wire.InvTypeWitnessUtreexoBlock, &inv.Hash)//여기까지
 			getDataMsg.AddInvVect(inv)
 			blocksInQueue[inv.Hash] = struct{}{}
 		}
@@ -263,7 +272,6 @@ func handleInvMessage(m *wire.MsgInv, chain *blockchain.BlockChain, conn net.Con
 	}
 	return nil
 }
-
 // handleBlockMessage: MsgBlock 처리/블록 검증, 체인 추가, 목표 블록 확인, 추가 요청 로직 포함, 수신된 블록 메시지를 처리하여 체인에 추가하고, 동기화 상태를 관리하며, 타겟 블록에 도달했는지 확인
 func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, blocksInQueue map[chainhash.Hash]struct{}, targetBlockHash *chainhash.Hash, conn net.Conn, netParams *chaincfg.Params) error {
 	delete(blocksInQueue, *block.Hash())
@@ -314,16 +322,15 @@ func handleUtreexo(proof *wire.MsgUtreexoProof, utreexo *blockchain.UtreexoViewp
 	// 예상 과정: 위에서 연결은 다 했고 해당 함수에서는 메세지를 처리하면 됨
 	// UTREEXO 증명 데이터 확인 → 증명 데이터 검증 → 축적기 상태 업데이트 → 목표 상태 확인 → 연결 관리
 	//각 파라미터 역할: UTREEXO 헤더 가져오기, , , UTREEXO노드와 연결하다가 목표 도달시 연결 종료
-	blockHash := proof.BlockHash
-	if blockHash=nil
-	fmt.Print("UTREEXO Block Hash is not correct")
+	// 사용 안해도 되는거 blockHash := proof.BlockHash
+	// 사용 안해도 되는거 if blockHash=nil
+	//미사용 fmt.Print("UTREEXO Block Hash is not correct")
 
 	// 디버깅 해야한다면 fmt.Printf("Handling Utreexo proof for block %s, target root %s\n", blockHash.String(), targetRootHash.String())
 
 	// 증명 검증
-	// 실제 메서드명은 blockchain/utreexo 패키지 확인 필요
-	// 예: go doc github.com/utreexo/utreexod/blockchain UtreexoViewpoint
-	// 예상 메서드: VerifyProof(proof *wire.MsgUtreexoProof, blockHash *chainhash.Hash) error
+	// blockchain/utreexo 패키지 확인 필요
+	// go doc github.com/utreexo/utreexod/blockchain UtreexoViewpoint
 	err := utreexo.VerifyProof(proof, blockHash)
 	if err != nil {
 		return fmt.Errorf("Utreexo proof verification failed for block %s: %v", blockHash.String(), err)
@@ -331,14 +338,12 @@ func handleUtreexo(proof *wire.MsgUtreexoProof, utreexo *blockchain.UtreexoViewp
 
 	// 상태 업데이트
 	// 실제 필드명(Proof)과 메서드명(Modify) 확인 필요
-	// 예상: Proof []byte, Modify(proof []byte, blockHash *chainhash.Hash) error
 	err = utreexo.Modify(proof.Proof, blockHash)
 	if err != nil {
 		return fmt.Errorf("Utreexo state update failed for block %s: %v", blockHash.String(), err)
 	}
 
 	// 목표 상태 확인
-	// 예상 메서드: GetRoots() []*chainhash.Hash
 	currentRoots := utreexo.GetRoots()
 	for _, root := range currentRoots {
 		if root.IsEqual(targetRootHash) {

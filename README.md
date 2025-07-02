@@ -1,8 +1,8 @@
 # baronamu
+Currently, nodes serve two roles: they synchronize the chain state to the latest state through Initial Block Download (IBD) and, once synchronized, receive, validate, and propagate transactions and blocks. 
+
+However, if the IBD code and transaction handling code are separated, they can be managed independently so it makes reducing overall complexity and helps users running UtreexoD or other compatible implemnetations start their noods faster
 It outputs a relatively up-to-date Utreexo state. 
-So this project helps users running UtreexoD or other compatible implementations start their nodes faster. 
-Additionally, it separates IBD code from transaction handling code, reducing overall complexity.
-adf
 ## Requirements
 
 ## Installation

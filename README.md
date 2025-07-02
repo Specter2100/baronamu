@@ -18,4 +18,4 @@ It outputs a relatively up-to-date Utreexo state.
 ## Release Verification
 
 ## License
-
+baro namu is licensed under the copyfree ISC License

@@ -12,7 +12,7 @@ It outputs a relatively up-to-date Utreexo state.
 ## IRC
 
 ## Issue Tracker
-
+The integrated github issue tracker is used for this project.
 ## Documentation
 
 ## Release Verification

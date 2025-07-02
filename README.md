@@ -9,8 +9,6 @@ It outputs a relatively up-to-date Utreexo state.
 
 ## Getting Started
 
-## IRC
-
 ## Issue Tracker
 The integrated github issue tracker is used for this project.
 ## Documentation

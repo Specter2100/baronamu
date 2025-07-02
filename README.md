@@ -18,4 +18,4 @@ The integrated github issue tracker is used for this project.
 ## Release Verification
 
 ## License
-baro namu is licensed under the copyfree ISC License
+baro namu is licensed under the [copyfree](https://copyfree.org/) ISC License

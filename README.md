@@ -1,4 +1,5 @@
 # baronamu
+baronamu generate a binary in the cmd/ directory of Utreexod to output the Utreexo state to standard output and a file upon block validation completion.
 Currently, nodes serve two roles: they synchronize the chain state to the latest state through Initial Block Download (IBD) and, once synchronized, receive, validate, and propagate transactions and blocks. 
 
 However, if the IBD code and transaction handling code are separated, they can be managed independently so it makes reducing overall complexity and helps users running UtreexoD or other compatible implemnetations start their noods faster

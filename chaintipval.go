@@ -18,6 +18,8 @@ import (
 	"github.com/utreexo/utreexod/wire"
 )
 
+//
+
 func main() {
 	signet := flag.Bool("signet", false, "Enable Signet network")
 	testnet3 := flag.Bool("testnet3", false, "Enable Testnet3 network")
@@ -163,7 +165,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 // 핸드쉐이크 완료 후 블록 요청 과정으로 블록 요청 하나하나 보는
 // requestBlocks: 전체 흐름 관리
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
-	targetBlockHash, err := chainhash.NewHashFromStr("000000ade699ac51fe9f23005115eccafe986e9d0c97f87403579698d31f1692")
+	targetBlockHash, err := chainhash.NewHashFromStr("0000001039d4ae508fede893a00d524b03a92af2a7142680cff2bbd1113b35a3")
 	if err != nil {
 		return fmt.Errorf("invalid target block hash: %v", err)
 	}
@@ -197,7 +199,7 @@ func sendGetBlocks(conn net.Conn, netParams *chaincfg.Params, blockLocator []*ch
 	return nil
 }
 
-// processMessages: 메시지 수신 및 처리 루프/ 메시지 수신 루프를 관리. 각 메시지 타입에 맞는 핸들러 함수 호출. //여기서 걸리니 에러가 나오는거 아닌가 얘는 왜 processmessages를 go to def하면 중복되게 나오지??
+// processMessages: 메시지 수신 및 처리 루프/ 메시지 수신 루프를 관리. 각 메시지 타입에 맞는 핸들러 함수 호출. 여기서 걸리니 에러가 나오는거 아닌가 얘는 왜 processmessages를 go to def하면 중복되게 나오지??
 func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain, targetBlockHash *chainhash.Hash) error {
 	blocksInQueue := make(map[chainhash.Hash]struct{}) //요청 중인 블록 해시를 추적하는거
 
@@ -251,7 +253,7 @@ func handleInvMessage(m *wire.MsgInv, chain *blockchain.BlockChain, conn net.Con
 			if chain.IsKnownOrphan(&inv.Hash) {
 				continue
 			}
-			inv.Type = wire.InvTypeWitnessBlock
+			inv.Type = wire.InvTypeWitnessUtreexoBlock //지정하는것 InvWitnessBlock, InvTypeWitnessUtreexoBlock , 얘를 처음쓸지말지는 프로토콜 이해도에따라 다름, 그 다음 어떤거를 쓸지는 점프데프니션으로 알 수 있다.
 			getDataMsg.AddInvVect(inv)
 			blocksInQueue[inv.Hash] = struct{}{}
 		}
@@ -307,47 +309,6 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 		}
 		fmt.Println("Sent additional getblocks request")
 	}
-	return nil
-}
-
-func handleUtreexo(proof *wire.MsgUtreexoProof, utreexo *blockchain.UtreexoViewpoint, targetRootHash *chainhash.Hash, conn net.Conn) error {
-	// 예상 과정: 위에서 연결은 다 했고 해당 함수에서는 메세지를 처리하면 됨
-	// UTREEXO 증명 데이터 확인 → 증명 데이터 검증 → 축적기 상태 업데이트 → 목표 상태 확인 → 연결 관리
-	//각 파라미터 역할: UTREEXO 헤더 가져오기, , , UTREEXO노드와 연결하다가 목표 도달시 연결 종료
-	blockHash := proof.BlockHash
-	if blockHash=nil
-	fmt.Print("UTREEXO Block Hash is not correct")
-
-	// 디버깅 해야한다면 fmt.Printf("Handling Utreexo proof for block %s, target root %s\n", blockHash.String(), targetRootHash.String())
-
-	// 증명 검증
-	// 실제 메서드명은 blockchain/utreexo 패키지 확인 필요
-	// 예: go doc github.com/utreexo/utreexod/blockchain UtreexoViewpoint
-	// 예상 메서드: VerifyProof(proof *wire.MsgUtreexoProof, blockHash *chainhash.Hash) error
-	err := utreexo.VerifyProof(proof, blockHash)
-	if err != nil {
-		return fmt.Errorf("Utreexo proof verification failed for block %s: %v", blockHash.String(), err)
-	}
-
-	// 상태 업데이트
-	// 실제 필드명(Proof)과 메서드명(Modify) 확인 필요
-	// 예상: Proof []byte, Modify(proof []byte, blockHash *chainhash.Hash) error
-	err = utreexo.Modify(proof.Proof, blockHash)
-	if err != nil {
-		return fmt.Errorf("Utreexo state update failed for block %s: %v", blockHash.String(), err)
-	}
-
-	// 목표 상태 확인
-	// 예상 메서드: GetRoots() []*chainhash.Hash
-	currentRoots := utreexo.GetRoots()
-	for _, root := range currentRoots {
-		if root.IsEqual(targetRootHash) {
-			fmt.Println("Target Utreexo state reached, exiting")
-			conn.Close()
-			os.Exit(0)
-		}
-	}
-
 	return nil
 }
 

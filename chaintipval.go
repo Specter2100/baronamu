@@ -199,35 +199,42 @@ func sendGetBlocks(conn net.Conn, netParams *chaincfg.Params, blockLocator []*ch
 	return nil
 }
 
-// processMessages: 메시지 수신 및 처리 루프/ 메시지 수신 루프를 관리. 각 메시지 타입에 맞는 핸들러 함수 호출. 여기서 걸리니 에러가 나오는거 아닌가 얘는 왜 processmessages를 go to def하면 중복되게 나오지??
+// processMessages: 메시지 수신 및 처리 루프/ 메시지 수신 루프를 관리. 각 메시지 타입에 맞는 핸들러 함수 호출.
+// 여기서 걸리니 에러가 나오는거 아닌가 얘는 왜 processmessages를 go to def하면 중복되게 나오지??
 func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain, targetBlockHash *chainhash.Hash) error {
 	blocksInQueue := make(map[chainhash.Hash]struct{}) //요청 중인 블록 해시를 추적하는거
+	fmt.Println("여기니")
 
 	for {
-		_, msg, bytes, err := wire.ReadMessageWithEncodingN(conn, wire.FeeFilterVersion, netParams.Net, wire.WitnessEncoding) // 0 → wire.ProtocolVersion
+		_, msg, bytes, err := wire.ReadMessageWithEncodingN(conn, wire.FeeFilterVersion, netParams.Net, wire.WitnessEncoding) //
+		fmt.Println("여기냐")
 		if err != nil {
-			log.Printf("Failed to read message: %v, %v", err, msg)
+			log.Printf("Failed to read message: %v, %v", err, msg) // 에러 발생시 로그 남기고 진행
 			continue
 		}
 
 		switch m := msg.(type) {
-		case *wire.MsgInv: //invmessage 받는 경우 MsgInv 말하는거
-			err = handleInvMessage(m, chain, conn, netParams, blocksInQueue)
+		case *wire.MsgInv: // MsgInv 처리/ 블록 해시를 포함하는 inv 메시지를 처리하고 getdata 요청
+			err = handleInvMessage(m, chain, conn, netParams, blocksInQueue) // inv 메시지 처리 함수 호출
+			fmt.Println("에러")
 			if err != nil {
+				fmt.Println("여기 에러")
 				return err
 			}
 
-		case *wire.MsgBlock:
+		case *wire.MsgBlock: // MsgBlock 처리/ 블록 메시지 처리하고 블록에 검증, 체인 업뎃, 목표 블록도 확인
 			block, err := btcutil.NewBlockFromBytes(bytes)
+			fmt.Println("에러2")
 			if err != nil {
+				fmt.Println("여기 에러2")
 				return err
 			}
-			err = handleBlockMessage(block, chain, blocksInQueue, targetBlockHash, conn, netParams)
+			err = handleBlockMessage(block, chain, blocksInQueue, targetBlockHash, conn, netParams) // 블록 메세지 처리 함수 호출
 			if err != nil {
 				return err
 			}
 
-		case *wire.MsgReject:
+		case *wire.MsgReject: // MsgReject 처리/ 거부 메세지를 처리하고 반환
 			return handleRejectMessage(m)
 
 		case *wire.MsgPing: // ping 메시지 처리 추가
@@ -246,24 +253,25 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 
 // handleInvMessage: MsgInv 처리/ getdata 요청을 보내고, 빈 InvList일 때 추가 getblocks 요청
 func handleInvMessage(m *wire.MsgInv, chain *blockchain.BlockChain, conn net.Conn, netParams *chaincfg.Params, blocksInQueue map[chainhash.Hash]struct{}) error {
-	getDataMsg := wire.NewMsgGetData()
-	for _, inv := range m.InvList {
-		if inv.Type == wire.InvTypeBlock {
-			fmt.Println("on item", inv.Hash.String())
+	getDataMsg := wire.NewMsgGetData() // getdata message 생성
+	for _, inv := range m.InvList {    // inv 리스트 for룹
+		if inv.Type == wire.InvTypeBlock { // 만약 블록 타입이면
+			fmt.Println("on item", inv.Hash.String()) // 현재 아이템 해시 출력하고
 			if chain.IsKnownOrphan(&inv.Hash) {
+				fmt.Println("261error") // 체인에 알려진 고아블록인지 확인하고 계속 해라
 				continue
 			}
 			inv.Type = wire.InvTypeWitnessUtreexoBlock //지정하는것 InvWitnessBlock, InvTypeWitnessUtreexoBlock , 얘를 처음쓸지말지는 프로토콜 이해도에따라 다름, 그 다음 어떤거를 쓸지는 점프데프니션으로 알 수 있다.
-			getDataMsg.AddInvVect(inv)
-			blocksInQueue[inv.Hash] = struct{}{}
+			getDataMsg.AddInvVect(inv)                 // getdata 메시지에 현재 inv 벡터 추가 얘도 지우나마나 똑같고
+			blocksInQueue[inv.Hash] = struct{}{}       // 대기 중인 블록 해시를 맵에 추가 근데 지우나 있으나 똑같은데?
 		}
 	}
 
-	err := wire.WriteMessage(conn, getDataMsg, wire.FeeFilterVersion, netParams.Net)
-	if err != nil {
+	err := wire.WriteMessage(conn, getDataMsg, wire.FeeFilterVersion, netParams.Net) // getdata 메세지 전송
+	if err != nil {                                                                  // 에러면 리턴 반환
 		return fmt.Errorf("failed to send getdata message: %v", err)
 	}
-	return nil
+	return nil // 에러 없으면 nil 반환
 }
 
 // handleBlockMessage: MsgBlock 처리/블록 검증, 체인 추가, 목표 블록 확인, 추가 요청 로직 포함, 수신된 블록 메시지를 처리하여 체인에 추가하고, 동기화 상태를 관리하며, 타겟 블록에 도달했는지 확인
@@ -279,6 +287,7 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 		fmt.Printf("block validation failed for %s: %v\n", block.Hash().String(), err)
 		return nil
 	}
+
 	if !isMainChain {
 		fmt.Printf("Received orphan block: %s, %v\n", block.Hash().String(), err)
 		return nil
@@ -290,15 +299,15 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 		os.Exit(0)
 	}
 
-	fmt.Println("blocksinqueue", len(blocksInQueue))
+	fmt.Println("blocksinqueue", len(blocksInQueue)) // 현재 대기 중인 블록 수 출력
 	if len(blocksInQueue) == 1 {
 		for k, v := range blocksInQueue {
 			fmt.Println(k, v)
 		}
 	}
-	if len(blocksInQueue) == 0 {
-		blockLocator := blockchain.BlockLocator([]*chainhash.Hash{block.Hash()})
-		getBlocksMsg := &wire.MsgGetBlocks{
+	if len(blocksInQueue) == 0 { // 대기 중인 블록이 없을 때 추가 getblocks 요청
+		blockLocator := blockchain.BlockLocator([]*chainhash.Hash{block.Hash()}) // 현재 블록 해시를 사용하여 블록 로케이터 생성
+		getBlocksMsg := &wire.MsgGetBlocks{                                      // MsgGetBlocks 메세지 생성
 			ProtocolVersion:    wire.FeeFilterVersion,
 			BlockLocatorHashes: blockLocator,
 			HashStop:           *targetBlockHash,

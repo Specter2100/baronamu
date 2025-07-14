@@ -104,7 +104,7 @@ func main() {
 		DB:          db,
 		ChainParams: netParams,
 		TimeSource:  blockchain.NewMedianTime(),
-		UtreexoView: utreexo,               //utreexoview를 만들어서 넣어야함, 어떻게 할 수 있을까, 만드는건 다른 레포지토리에서 하고 있으니 utreexod 라이브러리에 가서
+		UtreexoView: utreexo,               // utreexoview를 만들어서 넣어야함, 어떻게 할 수 있을까, 만드는건 다른 레포지토리에서 하고 있으니 utreexod 라이브러리에 가서
 		Checkpoints: netParams.Checkpoints, // 빠른 동기화, 안정성 등 장점밖에 없는데 그냥 기본적으로 작동되게 넣어두면 안되나?
 		Interrupt:   nil,
 	})
@@ -130,7 +130,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 	verMsg := wire.NewMsgVersion(
 		wire.NewNetAddressIPPort(localAddr.IP, uint16(localAddr.Port), wire.SFNodeNetworkLimited|wire.SFNodeWitness),
 		wire.NewNetAddressIPPort(remoteAddr.IP, uint16(remoteAddr.Port), 0),
-		0, // nonce
+		0,
 		0,
 	)
 
@@ -165,7 +165,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 // 핸드쉐이크 완료 후 블록 요청 과정으로 블록 요청 하나하나 보는
 // requestBlocks: 전체 흐름 관리
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
-	targetBlockHash, err := chainhash.NewHashFromStr("000000070bc517a758501190df354a9504a96fd86d18df0ee4c4ae26bbfb265d")
+	targetBlockHash, err := chainhash.NewHashFromStr("000000bf4a1d3627b9ac861f795f2504650f05513198255a4b5de41102a03e15")
 	if err != nil {
 		return fmt.Errorf("Invalid target block hash: %v", err)
 	}
@@ -185,6 +185,8 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 	return processMessages(conn, netParams, chain, targetBlockHash)
 }
 
+// 블록체인에 유트렉스오뷰포인트를 넣고
+// 인브메세지를 유트렉스오 블록으로 바꿈 msgblock,witnessblock, 하나 더
 // sendGetBlocks: getblocks 메시지 전송/ MsgGetBlocks 메시지를 생성하고 전송. 초기 요청과 추가 요청에 재사용 가능
 func sendGetBlocks(conn net.Conn, netParams *chaincfg.Params, blockLocator []*chainhash.Hash, targetBlockHash *chainhash.Hash) error {
 	getBlocksMsg := &wire.MsgGetBlocks{
@@ -273,32 +275,34 @@ func handleInvMessage(m *wire.MsgInv, chain *blockchain.BlockChain, conn net.Con
 // handleBlockMessage: MsgBlock 처리/블록 검증, 체인 추가, 목표 블록 확인, 추가 요청 로직 포함, 수신된 블록 메시지를 처리하여 체인에 추가하고, 동기화 상태를 관리하며, 타겟 블록에 도달했는지 확인
 func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, blocksInQueue map[chainhash.Hash]struct{}, targetBlockHash *chainhash.Hash, conn net.Conn, netParams *chaincfg.Params) error {
 	delete(blocksInQueue, *block.Hash()) // 현재 블록 해시를 대기 중인 블록 맵에서 제거
-	snapshot := chain.BestSnapshot()
-	fmt.Printf("Best height %v, Hash %v, Got block %v\n", snapshot.Height, snapshot.Hash, block.Hash()) // 현재 체인의 최고 높이와 해시, 수신된 블록 해시 출력인데 blcok.Hash에서 체인팁 1차 나옴
 
 	isMainChain, _, err := chain.ProcessBlock(block, blockchain.BFNone)
-	if err != nil { // 305를 받아야하는데 얘를 받아버림 / 블록 검증 실패
+	if err != nil {
 		txs := block.Transactions()
 		fmt.Println(txs[0].Hash())
 		fmt.Printf("Block validation failed for %s: %v\n", block.Hash().String(), err)
 		return nil
 	}
+
 	if !isMainChain {
 		fmt.Printf("Received orphan block: %s, %v\n", block.Hash().String(), err) //block.Hahs는 바꾸기 스냅샤스로
-		if len(blocksInQueue) == 0 {                                              // 대기 중인 블록이 없을 때 추가 getblocks 요청
+		if len(blocksInQueue) == 0 {
+			snapshot := chain.BestSnapshot()                                           // 대기 중인 블록이 없을 때 추가 getblocks 요청
 			blockLocator := blockchain.BlockLocator([]*chainhash.Hash{&snapshot.Hash}) // 현재 블록 해시를 사용하여 블록 로케이터 생성
+			// 스냅샷을 278라인에서 받고 281에 프로세스 블록을 지나면 현재 스냅샷이 달라지는데 왜 291에서 현재 스냅샷을 받아도 괜찮을까?
 			getBlocksMsg := &wire.MsgGetBlocks{
 				ProtocolVersion:    wire.FeeFilterVersion,
 				BlockLocatorHashes: blockLocator,
 				HashStop:           *targetBlockHash,
 			}
-			err = wire.WriteMessage(conn, getBlocksMsg, wire.FeeFilterVersion, netParams.Net)
-			return nil
+			return wire.WriteMessage(conn, getBlocksMsg, wire.FeeFilterVersion, netParams.Net)
 		}
 	}
 
 	if targetBlockHash.IsEqual(block.Hash()) {
 		fmt.Println("Target block reached, exiting")
+		utreexoView := chain.GetUtreexoView()                     // 현재 블록체인의 UtreexoViewpoint를 가져옴 utreexo set 그 자체, 머클 트리 걔
+		fmt.Println("Utreexo Viewpoint:", utreexoView.ToString()) // Utreexo Viewpoint 출력
 		conn.Close()
 		os.Exit(0)
 	}
@@ -329,4 +333,8 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 func handleRejectMessage(m *wire.MsgReject) error {
 	fmt.Printf("Reject: %s\n", m.Reason)
 	return fmt.Errorf("rejected: %s", m.Reason)
+}
+
+func downLoadUtreexoBlocks() {
+
 }

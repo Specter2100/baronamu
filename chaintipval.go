@@ -92,8 +92,7 @@ func main() {
 	defer db.Close()
 
 	// Initialize UtreexoViewpoint.
-	var utreexo *blockchain.UtreexoViewpoint
-	utreexo = blockchain.NewUtreexoViewpoint()
+	utreexo := blockchain.NewUtreexoViewpoint()
 
 	// Blockchain reset.
 	chain, err := blockchain.New(&blockchain.Config{
@@ -164,9 +163,9 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 // after successful handshake.
 // requestBlockst sends a getblocks message to the connected peer
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
-	targetBlockHash, err := chainhash.NewHashFromStr("000000bf4a1d3627b9ac861f795f2504650f05513198255a4b5de41102a03e15")
+	targetBlockHash, err := chainhash.NewHashFromStr("00000002d38fc984fa25a057930af276c00a001428bd68b8216f826d580a382f")
 	if err != nil {
-		return fmt.Errorf("Invalid target block hash: %v", err)
+		return err
 	}
 
 	locator, err := chain.LatestBlockLocator()
@@ -195,7 +194,6 @@ func sendGetBlocks(conn net.Conn, netParams *chaincfg.Params, blockLocator []*ch
 	}
 	err := wire.WriteMessage(conn, getBlocksMsg, wire.FeeFilterVersion, netParams.Net)
 	if err != nil {
-		return fmt.Errorf("Failed to send getblocks message: %v", err)
 	}
 	return nil
 }
@@ -272,7 +270,7 @@ func handleInvMessage(m *wire.MsgInv, chain *blockchain.BlockChain, conn net.Con
 
 	err := wire.WriteMessage(conn, getDataMsg, wire.FeeFilterVersion, netParams.Net)
 	if err != nil {
-		return fmt.Errorf("Failed to send getdata message: %v", err)
+		return err
 	}
 	return nil
 }

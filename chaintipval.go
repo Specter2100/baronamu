@@ -163,7 +163,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 // after successful handshake.
 // requestBlockst sends a getblocks message to the connected peer
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
-	targetBlockHash, err := chainhash.NewHashFromStr("00000315af6c20d73139312c37dd689ecf68be1b055f145901de5a4482c06270")
+	targetBlockHash, err := chainhash.NewHashFromStr("000000d86368960eddbf7e127f8ba93a56efe71420b5dd8dbf8b0a68fa9ebbd1")
 	if err != nil {
 		return err
 	}
@@ -322,7 +322,6 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 		if err != nil {
 			return fmt.Errorf("ailed to send next getblocks: %v", err)
 		}
-		fmt.Println("Sent additional blocks request")
 	}
 	return nil
 }

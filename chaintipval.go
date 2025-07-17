@@ -154,7 +154,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 			}
 			return
 		default:
-			fmt.Printf("Received other message: %T\n", m)
+			fmt.Printf("Connected to node, received message: %T\n", m)
 		}
 	}
 }
@@ -194,6 +194,7 @@ func sendGetBlocks(conn net.Conn, netParams *chaincfg.Params, blockLocator []*ch
 	}
 	err := wire.WriteMessage(conn, getBlocksMsg, wire.FeeFilterVersion, netParams.Net)
 	if err != nil {
+		return fmt.Errorf("failed to send getblocks message: %v", err)
 	}
 	return nil
 }
@@ -239,7 +240,6 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 
 		// Handle MsgPing which is a ping message and send a pong response.
 		case *wire.MsgPing:
-			fmt.Println("Received ping, sending pong")
 			pongMsg := wire.NewMsgPong(m.Nonce)
 			err = wire.WriteMessage(conn, pongMsg, wire.FeeFilterVersion, netParams.Net)
 			if err != nil {
@@ -255,15 +255,11 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 // Handle MsgInv requesting getdata and getblocks when InvList is empty.
 func handleInvMessage(m *wire.MsgInv, chain *blockchain.BlockChain, conn net.Conn, netParams *chaincfg.Params, blocksInQueue map[chainhash.Hash]struct{}) error {
 	getDataMsg := wire.NewMsgGetData()
-	fmt.Println("Get Data")
 	for _, inv := range m.InvList {
 		if inv.Type == wire.InvTypeBlock {
 			if chain.IsKnownOrphan(&inv.Hash) {
 				continue
 			}
-			// 블록 높이로 500개 단위로 알람 뜨게
-
-			//	fmt.Println("On Block Hash", inv.Hash.String())
 			inv.Type = wire.InvTypeWitnessUtreexoBlock
 			getDataMsg.AddInvVect(inv)
 			blocksInQueue[inv.Hash] = struct{}{}
@@ -279,7 +275,6 @@ func handleInvMessage(m *wire.MsgInv, chain *blockchain.BlockChain, conn net.Con
 
 // Handle and validate MsgBlock adding it to the chain, checking
 // for target blocks, and manging the synchronization state.
-// 블록높이가 500으로 나눠떨어질때마다 Height를 출력해라
 func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, blocksInQueue map[chainhash.Hash]struct{}, targetBlockHash *chainhash.Hash, conn net.Conn, netParams *chaincfg.Params) error {
 	delete(blocksInQueue, *block.Hash())
 
@@ -292,7 +287,6 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 	}
 
 	if !isMainChain {
-		fmt.Printf("Received orphan block: %s, %v\n", block.Hash().String(), err)
 		if len(blocksInQueue) == 0 {
 			snapshot := chain.BestSnapshot()
 			blockLocator := blockchain.BlockLocator([]*chainhash.Hash{&snapshot.Hash})
@@ -306,7 +300,7 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 	}
 
 	if targetBlockHash.IsEqual(block.Hash()) {
-		fmt.Println("Target block reached, exiting")
+		fmt.Println("Congratulations!\nThe target block has been reached.\nTarget Block Height:", block.Height(), "Target Block Hash:", block.Hash().String())
 		utreexoView := chain.GetUtreexoView()
 		fmt.Println("Utreexo Viewpoint:", utreexoView.ToString())
 		conn.Close()
@@ -316,12 +310,7 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 	if block.Height()%500 == 0 {
 		fmt.Println("Block Height:", block.Height(), "Block Hash:", block.Hash().String())
 	}
-	// fmt.Println("Blocksinqueue", len(blocksInQueue))
-	if len(blocksInQueue) == 1 {
-		for k, v := range blocksInQueue {
-			fmt.Println(k, v)
-		}
-	}
+
 	if len(blocksInQueue) == 0 {
 		blockLocator := blockchain.BlockLocator([]*chainhash.Hash{block.Hash()})
 		getBlocksMsg := &wire.MsgGetBlocks{
@@ -333,7 +322,7 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 		if err != nil {
 			return fmt.Errorf("ailed to send next getblocks: %v", err)
 		}
-		fmt.Println("Sent additional getblocks request")
+		fmt.Println("Sent additional blocks request")
 	}
 	return nil
 }

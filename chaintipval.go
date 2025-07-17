@@ -163,7 +163,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 // after successful handshake.
 // requestBlockst sends a getblocks message to the connected peer
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
-	targetBlockHash, err := chainhash.NewHashFromStr("00000002d38fc984fa25a057930af276c00a001428bd68b8216f826d580a382f")
+	targetBlockHash, err := chainhash.NewHashFromStr("00000315af6c20d73139312c37dd689ecf68be1b055f145901de5a4482c06270")
 	if err != nil {
 		return err
 	}
@@ -255,13 +255,15 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 // Handle MsgInv requesting getdata and getblocks when InvList is empty.
 func handleInvMessage(m *wire.MsgInv, chain *blockchain.BlockChain, conn net.Conn, netParams *chaincfg.Params, blocksInQueue map[chainhash.Hash]struct{}) error {
 	getDataMsg := wire.NewMsgGetData()
-	fmt.Println("creat getdata message")
+	fmt.Println("Get Data")
 	for _, inv := range m.InvList {
 		if inv.Type == wire.InvTypeBlock {
-			fmt.Println("On Block Hash", inv.Hash.String())
 			if chain.IsKnownOrphan(&inv.Hash) {
 				continue
 			}
+			// 블록 높이로 500개 단위로 알람 뜨게
+
+			//	fmt.Println("On Block Hash", inv.Hash.String())
 			inv.Type = wire.InvTypeWitnessUtreexoBlock
 			getDataMsg.AddInvVect(inv)
 			blocksInQueue[inv.Hash] = struct{}{}
@@ -277,6 +279,7 @@ func handleInvMessage(m *wire.MsgInv, chain *blockchain.BlockChain, conn net.Con
 
 // Handle and validate MsgBlock adding it to the chain, checking
 // for target blocks, and manging the synchronization state.
+// 블록높이가 500으로 나눠떨어질때마다 Height를 출력해라
 func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, blocksInQueue map[chainhash.Hash]struct{}, targetBlockHash *chainhash.Hash, conn net.Conn, netParams *chaincfg.Params) error {
 	delete(blocksInQueue, *block.Hash())
 
@@ -310,7 +313,10 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 		os.Exit(0)
 	}
 
-	fmt.Println("Blocksinqueue", len(blocksInQueue))
+	if block.Height()%500 == 0 {
+		fmt.Println("Block Height:", block.Height(), "Block Hash:", block.Hash().String())
+	}
+	// fmt.Println("Blocksinqueue", len(blocksInQueue))
 	if len(blocksInQueue) == 1 {
 		for k, v := range blocksInQueue {
 			fmt.Println(k, v)

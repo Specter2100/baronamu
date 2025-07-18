@@ -302,7 +302,7 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 	if targetBlockHash.IsEqual(block.Hash()) {
 		fmt.Println("Congratulations!\nThe target block has been reached.\nTarget Block Height:", block.Height(), "Target Block Hash:", block.Hash().String())
 		utreexoView := chain.GetUtreexoView()
-		fmt.Println("Utreexo Viewpoint:", utreexoView.ToString())
+		fmt.Println("Utreexo Viewpoint:", utreexoView.GetRoots(), utreexoView.NumLeaves())
 		conn.Close()
 		os.Exit(0)
 	}

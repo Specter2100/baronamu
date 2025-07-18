@@ -9,7 +9,10 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"encoding/json"
+
 	"github.com/utreexo/utreexod/blockchain"
+	"github.com/utreexo/utreexod/btcjson"
 	"github.com/utreexo/utreexod/btcutil"
 	"github.com/utreexo/utreexod/chaincfg"
 	"github.com/utreexo/utreexod/chaincfg/chainhash"
@@ -299,10 +302,33 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 		}
 	}
 
+	utreexorootandleave := &btcjson.GetUtreexoRootsResult{}
+
 	if targetBlockHash.IsEqual(block.Hash()) {
-		fmt.Println("Congratulations!\nThe target block has been reached.\nTarget Block Height:", block.Height(), "Target Block Hash:", block.Hash().String())
 		utreexoView := chain.GetUtreexoView()
-		fmt.Println("Utreexo Viewpoint:", utreexoView.GetRoots(), utreexoView.NumLeaves())
+		roots := utreexoView.GetRoots()
+		rootStrings := make([]string, len(roots))
+		for i, root := range roots {
+			if root != nil {
+				rootStrings[i] = root.String()
+			} else {
+				rootStrings[i] = ""
+			}
+		}
+		utreexorootandleave.Roots = rootStrings
+		utreexorootandleave.NumLeaves = utreexoView.NumLeaves()
+
+		// JSON 출력
+		result := struct {
+			Roots     []string `json:"roots"`
+			NumLeaves uint64   `json:"numleaves"`
+		}{
+			Roots:     utreexorootandleave.Roots,
+			NumLeaves: uint64(utreexorootandleave.NumLeaves),
+		}
+		jsonOutput, _ := json.MarshalIndent(result, " ", "  ")
+		fmt.Println("Congratulations!\nThe target block has been reached.")
+		fmt.Println(string(jsonOutput))
 		conn.Close()
 		os.Exit(0)
 	}

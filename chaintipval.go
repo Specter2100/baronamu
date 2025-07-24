@@ -1,5 +1,7 @@
 package main
 
+// 타켓 도달하고 새로 다운로드하면 바로 루트 출력되게
+// 데이터베이스 파일 만들기 전에 먼저 노드에 연결이 되는지 확인하고
 import (
 	"flag"
 	"fmt"
@@ -8,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"encoding/json"
 
@@ -23,7 +26,6 @@ import (
 func main() {
 	signet := flag.Bool("signet", false, "Enable Signet network")
 	testnet3 := flag.Bool("testnet3", false, "Enable Testnet3 network")
-	connect := flag.String("connect", "", "IP")
 	dataDirFlag := flag.String("datadir", "", "Directory to store data")
 	flag.Parse()
 
@@ -42,11 +44,8 @@ func main() {
 	if *signet && *testnet3 {
 		log.Fatal("Error: --signet and --testnet3 cannot be used together.")
 	}
-	if *connect == "" {
-		log.Fatal("Error: --connect flag is required.\nUsage: --connect <IP address>")
-	}
 
-	// Network paramers choice.
+	// Network parameters choice.
 	var netParams *chaincfg.Params
 	var defaultPort string
 	switch {
@@ -60,26 +59,10 @@ func main() {
 		log.Fatal("Error: Please specify --signet or --testnet3")
 	}
 
-	// IP&Port parsing.
-	host, port, err := net.SplitHostPort(*connect)
-	if err != nil {
-		host = *connect
-		port = defaultPort
-	}
-
-	if net.ParseIP(host) == nil {
-		log.Fatal("Error: Invalid IP address.")
-	}
-
-	fullAddress := fmt.Sprintf("%s:%s", host, port)
-	fmt.Printf("Connecting to node: %s\n", fullAddress)
-
-	// Data directory creation.
+	// Data directory creation and database initialization
 	dbPath := filepath.Join(dataDir, "Blocks_ffldb")
-
-	// If there is no database, creat a new one.
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		fmt.Println("Database not found. Creating new database...")
+		fmt.Println("Database not found.")
 		db, err := database.Create("ffldb", dbPath, netParams.Net)
 		if err != nil {
 			log.Fatalf("Failed to create database: %v", err)
@@ -87,17 +70,13 @@ func main() {
 		db.Close()
 	}
 
-	// Open database.
 	db, err := database.Open("ffldb", dbPath, netParams.Net)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
 	defer db.Close()
 
-	// Initialize UtreexoViewpoint.
 	utreexo := blockchain.NewUtreexoViewpoint()
-
-	// Blockchain reset.
 	chain, err := blockchain.New(&blockchain.Config{
 		DB:          db,
 		ChainParams: netParams,
@@ -111,17 +90,54 @@ func main() {
 	}
 	log.Println("Blockchain initialized successfully!")
 
-	connectToNode(fullAddress, netParams, chain)
+	// Connect to DNS seeds for initial peer discovery.
+	// The peer is Calvin Kim's UTREEXO seed server.
+	//
+	// X1 means the archive node.
+	// X000001 means the utreexod node.
+	dnsSeeds := []string{
+		"x1000001.seed.calvinkim.info",
+	}
+	addrs, err := lookupDNSeeds(dnsSeeds, defaultPort)
+	if err != nil {
+		log.Fatalf("Failed to lookup DNS seeds: %v", err)
+	}
+
+	// DNS 시드에서 가져온 주소들로 연결 시도
+	for _, addr := range addrs {
+		fmt.Printf("Attempting to connect to node: %s\n", addr)
+		conn, err := net.DialTimeout("tcp", addr, 60*time.Second)
+		if err != nil {
+			log.Printf("Failed to connect to %s: %v", addr, err)
+			continue
+		}
+		err = connectToNode(conn, addr, netParams, chain)
+		if err == nil {
+			return
+		}
+		log.Printf("Failed to process connection to %s: %v", addr, err)
+	}
+	log.Fatal("Failed to connect to any node.")
 }
 
-// connectToNode connects to the specified node
-// and performs the handshake.
-// It sends a version message and waits for a verack response.
-func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.BlockChain) {
-	conn, err := net.Dial("tcp", nodeIP)
-	if err != nil {
-		log.Fatalf("Failed to connect to node: %v", err)
+// lookupDNSeeds 특정 DNS 시드에서 IP 주소 조회
+func lookupDNSeeds(seeds []string, defaultPort string) ([]string, error) {
+	var addrs []string
+	for _, seed := range seeds {
+		ips, err := net.LookupHost(seed)
+		if err != nil {
+			log.Printf("Failed to resolve DNS seed %s: %v", seed, err)
+			continue
+		}
+		for _, ip := range ips {
+			addrs = append(addrs, fmt.Sprintf("%s:%s", ip, defaultPort))
+		}
 	}
+	return addrs, nil
+}
+
+// connectToNode 함수 (Utreexo 지원 확인 및 wtxidrelay 무시 추가)
+func connectToNode(conn net.Conn, nodeIP string, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
 	defer conn.Close()
 
 	localAddr := conn.LocalAddr().(*net.TCPAddr)
@@ -134,30 +150,36 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 		0,
 	)
 
-	err = wire.WriteMessage(conn, verMsg, wire.FeeFilterVersion, netParams.Net)
+	err := wire.WriteMessage(conn, verMsg, wire.FeeFilterVersion, netParams.Net)
 	if err != nil {
-		log.Fatalf("Failed to send version message: %v", err)
+		return fmt.Errorf("failed to send version message: %v", err)
 	}
 
 	for {
 		msg, _, err := wire.ReadMessage(conn, wire.FeeFilterVersion, netParams.Net)
 		if err != nil {
-			log.Fatalf("Failed to read message: %v", err)
+			if err.Error() == "ReadMessage: unhandled command [wtxidrelay]" {
+				fmt.Printf("Received wtxidrelay from %s, ignoring...\n", nodeIP)
+				continue // wtxidrelay 메시지 무시
+			}
+			return fmt.Errorf("failed to read message: %v", err)
 		}
 
 		switch m := msg.(type) {
+		case *wire.MsgVersion:
+			// Utreexo 지원 여부 확인 (SFNodeUtreexo는 utreexod에서 정의된 플래그로 가정)
+			if m.Services&wire.SFNodeUtreexo == 0 {
+				return fmt.Errorf("node %s does not support Utreexo", nodeIP)
+			}
+			fmt.Printf("Connected to Utreexo-supporting node: %s\n", nodeIP)
 		case *wire.MsgVerAck:
 			err = wire.WriteMessage(conn, wire.NewMsgVerAck(), wire.FeeFilterVersion, netParams.Net)
 			if err != nil {
-				log.Fatalf("Failed to send verack message: %v", err)
+				return fmt.Errorf("failed to send verack message: %v", err)
 			}
-			err = requestBlocks(conn, netParams, chain)
-			if err != nil {
-				log.Fatalf("Failed during block request: %v", err)
-			}
-			return
+			return requestBlocks(conn, netParams, chain)
 		default:
-			fmt.Printf("Connected to node, received message: %T\n", m)
+			fmt.Printf("Received message from %s: %T\n", nodeIP, m)
 		}
 	}
 }
@@ -166,7 +188,7 @@ func connectToNode(nodeIP string, netParams *chaincfg.Params, chain *blockchain.
 // after successful handshake.
 // requestBlockst sends a getblocks message to the connected peer
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
-	targetBlockHash, err := chainhash.NewHashFromStr("000000d86368960eddbf7e127f8ba93a56efe71420b5dd8dbf8b0a68fa9ebbd1")
+	targetBlockHash, err := chainhash.NewHashFromStr("0000012965e7e5d073e39cd2efc782054109d9bd359a9560f955f68eff227ef5")
 	if err != nil {
 		return err
 	}
@@ -318,7 +340,7 @@ func handleBlockMessage(block *btcutil.Block, chain *blockchain.BlockChain, bloc
 		utreexorootandleave.Roots = rootStrings
 		utreexorootandleave.NumLeaves = utreexoView.NumLeaves()
 
-		// JSON 출력
+		// Print JSON of the Utreexo roots and leaves
 		result := struct {
 			Roots     []string `json:"roots"`
 			NumLeaves uint64   `json:"numleaves"`

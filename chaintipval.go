@@ -1,7 +1,9 @@
 package main
 
-// 타켓 도달하고 새로 다운로드하면 바로 루트 출력되게
-// 데이터베이스 파일 만들기 전에 먼저 노드에 연결이 되는지 확인하고
+// Task
+// 1. 타켓 도달하고 새로 다운로드하면 바로 루트 출력되게
+// 2. 데이터베이스 파일 만들기 전에 먼저 노드에 연결이 되는지 확인하고
+// 3. 메인넷도 가능하게
 import (
 	"flag"
 	"fmt"
@@ -97,6 +99,8 @@ func main() {
 	// X000001 means the utreexod node.
 	dnsSeeds := []string{
 		"x1000001.seed.calvinkim.info",
+		"x1000001.signetseed.calvinkim.info",
+		"x1000001.testnetseed.calvinkim.info",
 	}
 	addrs, err := lookupDNSeeds(dnsSeeds, defaultPort)
 	if err != nil {

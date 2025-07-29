@@ -26,6 +26,7 @@ import (
 )
 
 func main() {
+	mainnet := flag.Bool("mainnet", false, "Enable Mainnet network")
 	signet := flag.Bool("signet", false, "Enable Signet network")
 	testnet3 := flag.Bool("testnet3", false, "Enable Testnet3 network")
 	dataDirFlag := flag.String("datadir", "", "Directory to store data")
@@ -43,6 +44,9 @@ func main() {
 	}
 
 	// Check network flags.
+	if *mainnet && (*signet || *testnet3) {
+		log.Fatal("Error: --mainnet cannot be used with --signet or --testnet3.")
+	}
 	if *signet && *testnet3 {
 		log.Fatal("Error: --signet and --testnet3 cannot be used together.")
 	}
@@ -51,6 +55,9 @@ func main() {
 	var netParams *chaincfg.Params
 	var defaultPort string
 	switch {
+	case *mainnet:
+		netParams = &chaincfg.MainNetParams
+		defaultPort = "8333"
 	case *signet:
 		netParams = &chaincfg.SigNetParams
 		defaultPort = "38333"
@@ -58,7 +65,7 @@ func main() {
 		netParams = &chaincfg.TestNet3Params
 		defaultPort = "18333"
 	default:
-		log.Fatal("Error: Please specify --signet or --testnet3")
+		log.Fatal("Error: Please specify mainnet or --signet or --testnet3")
 	}
 
 	// Data directory creation and database initialization

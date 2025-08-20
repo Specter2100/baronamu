@@ -114,7 +114,7 @@ func main() {
 		log.Fatalf("Failed to lookup DNS seeds: %v", err)
 	}
 
-	// DNS 시드에서 가져온 주소들로 연결 시도
+	// Try to connect address which bring from DNS Seed
 	for _, addr := range addrs {
 		fmt.Printf("Attempting to connect to node: %s\n", addr)
 		conn, err := net.DialTimeout("tcp", addr, 60*time.Second)
@@ -131,7 +131,7 @@ func main() {
 	log.Fatal("Failed to connect to any node.")
 }
 
-// lookupDNSeeds 특정 DNS 시드에서 IP 주소 조회
+// Query IP addresses from a specific DNS seed
 func lookupDNSeeds(seeds []string, defaultPort string) ([]string, error) {
 	var addrs []string
 	for _, seed := range seeds {
@@ -147,7 +147,7 @@ func lookupDNSeeds(seeds []string, defaultPort string) ([]string, error) {
 	return addrs, nil
 }
 
-// connectToNode 함수 (Utreexo 지원 확인 및 wtxidrelay 무시 추가)
+// Check Utreexo support and ignore wtxidrelay
 func connectToNode(conn net.Conn, nodeIP string, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
 	defer conn.Close()
 
@@ -169,14 +169,14 @@ func connectToNode(conn net.Conn, nodeIP string, netParams *chaincfg.Params, cha
 		if err != nil {
 			if err.Error() == "ReadMessage: unhandled command [wtxidrelay]" {
 				fmt.Printf("Received wtxidrelay from %s, ignoring...\n", nodeIP)
-				continue // wtxidrelay 메시지 무시
+				continue // Ignore wtxidrelay message
 			}
 			return fmt.Errorf("failed to read message: %v", err)
 		}
 
 		switch m := msg.(type) {
 		case *wire.MsgVersion:
-			// Utreexo 지원 여부 확인 (SFNodeUtreexo는 utreexod에서 정의된 플래그로 가정)
+			// Check Utreexo support (assuming SFNodeUtreexo is a flag defined in utreexod)
 			if m.Services&wire.SFNodeUtreexo == 0 {
 				return fmt.Errorf("node %s does not support Utreexo", nodeIP)
 			}

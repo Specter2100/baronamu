@@ -3,7 +3,7 @@ package main
 // Task
 // 1. 타켓 도달하고 새로 다운로드하면 바로 루트 출력되게
 // 2. 데이터베이스 파일 만들기 전에 먼저 노드에 연결이 되는지 확인하고
-// 3. 메인넷도 가능하게
+
 import (
 	"flag"
 	"fmt"
@@ -160,12 +160,10 @@ func connectToNode(conn net.Conn, nodeIP string, netParams *chaincfg.Params, cha
 		0,
 		0,
 	)
-
 	err := wire.WriteMessage(conn, verMsg, wire.FeeFilterVersion, netParams.Net)
 	if err != nil {
 		return fmt.Errorf("failed to send version message: %v", err)
 	}
-
 	for {
 		msg, _, err := wire.ReadMessage(conn, wire.FeeFilterVersion, netParams.Net)
 		if err != nil {
@@ -199,7 +197,7 @@ func connectToNode(conn net.Conn, nodeIP string, netParams *chaincfg.Params, cha
 // after successful handshake.
 // requestBlockst sends a getblocks message to the connected peer
 func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
-	targetBlockHash, err := chainhash.NewHashFromStr("0000012965e7e5d073e39cd2efc782054109d9bd359a9560f955f68eff227ef5")
+	targetBlockHash, err := chainhash.NewHashFromStr("00000000000019cca398fe0a4d6d4fffb2396596d4866b933971b4c16b5bfddb")
 	if err != nil {
 		return err
 	}

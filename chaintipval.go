@@ -7,6 +7,8 @@ package main
 import (
 	"flag"
 	"fmt"
+
+	//"hash"
 	"log"
 	"net"
 	"os"
@@ -205,6 +207,38 @@ func requestBlocks(conn net.Conn, netParams *chaincfg.Params, chain *blockchain.
 	locator, err := chain.LatestBlockLocator()
 	if err != nil {
 		return err
+	}
+
+	// Check if the target block is already in my database.
+	// If it is, immediately print the available Utreexo roots and leaves.
+	exists, _ := chain.HaveBlock(targetBlockHash)
+	if exists {
+		utreexoView := chain.GetUtreexoView()
+		roots := utreexoView.GetRoots()
+		rootStrings := make([]string, len(roots))
+		for i, root := range roots {
+			if root != nil {
+				rootStrings[i] = root.String()
+			} else {
+				rootStrings[i] = ""
+			}
+		}
+		utreexorootandleave := &btcjson.GetUtreexoRootsResult{}
+		utreexorootandleave.Roots = rootStrings
+		utreexorootandleave.NumLeaves = utreexoView.NumLeaves()
+
+		result := struct {
+			Roots     []string `json:"roots"`
+			NumLeaves uint64   `json:"numleaves"`
+		}{
+			Roots:     utreexorootandleave.Roots,
+			NumLeaves: uint64(utreexorootandleave.NumLeaves),
+		}
+		jsonOutput, _ := json.MarshalIndent(result, " ", "  ")
+		fmt.Println("Congratulations!\nThe target block has been reached.")
+		fmt.Println(string(jsonOutput))
+		conn.Close()
+		os.Exit(0)
 	}
 
 	err = sendGetBlocks(conn, netParams, locator, targetBlockHash)

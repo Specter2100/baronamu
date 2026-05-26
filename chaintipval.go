@@ -2,7 +2,7 @@ package main
 
 // Task
 // 1. 타켓 도달하고 새로 다운로드하면 바로 루트 출력되게
-// 2. 데이터베이스 파일 만들기 전에 먼저 노드에 연결이 되는지 확인하고
+// 2. (완료) DB 파일을 만들기 전에 먼저 노드 연결을 확인 → connectToPeer/handshake 성공 후에만 DB 생성
 
 import (
 	"flag"
@@ -70,7 +70,37 @@ func main() {
 		log.Fatal("Error: Please specify mainnet or --signet or --testnet3")
 	}
 
-	// Data directory creation and database initialization
+	// --- Step 1: Verify node connectivity BEFORE creating the database. ---
+	// Connect to DNS seeds for initial peer discovery.
+	// The peer is Calvin Kim's UTREEXO seed server.
+	//
+	// X1 means the archive node.
+	// X000001 means the utreexod node.
+	dnsSeeds := []string{
+		"x1000001.seed.calvinkim.info",
+		"x1000001.signetseed.calvinkim.info",
+		"x1000001.testnetseed.calvinkim.info",
+	}
+	addrs, err := lookupDNSeeds(dnsSeeds, defaultPort)
+	if err != nil {
+		log.Fatalf("Failed to lookup DNS seeds: %v", err)
+	}
+
+	if len(addrs) == 0 {
+		log.Fatal("No node addresses were resolved from the DNS seeds.")
+	}
+
+	// Dial candidates and complete the version/verack handshake. Only after a
+	// Utreexo-supporting peer is confirmed do we create the database, so a failed
+	// connection never leaves an empty database file behind.
+	conn, peerAddr, err := connectToPeer(addrs, netParams)
+	if err != nil {
+		log.Fatalf("Failed to connect to any node: %v", err)
+	}
+	defer conn.Close()
+	log.Printf("Handshake complete with %s. Initializing database...", peerAddr)
+
+	// --- Step 2: Connection confirmed; now set up the database. ---
 	dbPath := filepath.Join(dataDir, "Blocks_ffldb")
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		fmt.Println("Database not found.")
@@ -101,36 +131,10 @@ func main() {
 	}
 	log.Println("Blockchain initialized successfully!")
 
-	// Connect to DNS seeds for initial peer discovery.
-	// The peer is Calvin Kim's UTREEXO seed server.
-	//
-	// X1 means the archive node.
-	// X000001 means the utreexod node.
-	dnsSeeds := []string{
-		"x1000001.seed.calvinkim.info",
-		"x1000001.signetseed.calvinkim.info",
-		"x1000001.testnetseed.calvinkim.info",
+	// --- Step 3: Request and validate blocks on the established connection. ---
+	if err := requestBlocks(conn, netParams, chain); err != nil {
+		log.Fatalf("Failed to process connection to %s: %v", peerAddr, err)
 	}
-	addrs, err := lookupDNSeeds(dnsSeeds, defaultPort)
-	if err != nil {
-		log.Fatalf("Failed to lookup DNS seeds: %v", err)
-	}
-
-	// Try to connect address which bring from DNS Seed
-	for _, addr := range addrs {
-		fmt.Printf("Attempting to connect to node: %s\n", addr)
-		conn, err := net.DialTimeout("tcp", addr, 60*time.Second)
-		if err != nil {
-			log.Printf("Failed to connect to %s: %v", addr, err)
-			continue
-		}
-		err = connectToNode(conn, addr, netParams, chain)
-		if err == nil {
-			return
-		}
-		log.Printf("Failed to process connection to %s: %v", addr, err)
-	}
-	log.Fatal("Failed to connect to any node.")
 }
 
 // Query IP addresses from a specific DNS seed
@@ -149,10 +153,32 @@ func lookupDNSeeds(seeds []string, defaultPort string) ([]string, error) {
 	return addrs, nil
 }
 
-// Check Utreexo support and ignore wtxidrelay
-func connectToNode(conn net.Conn, nodeIP string, netParams *chaincfg.Params, chain *blockchain.BlockChain) error {
-	defer conn.Close()
+// connectToPeer dials each candidate address in turn and runs the handshake.
+// It returns the first live connection whose peer supports Utreexo, along with
+// that peer's address. The caller owns the returned connection and must close
+// it. Connections that fail to dial or handshake are closed here.
+func connectToPeer(addrs []string, netParams *chaincfg.Params) (net.Conn, string, error) {
+	for _, addr := range addrs {
+		fmt.Printf("Attempting to connect to node: %s\n", addr)
+		conn, err := net.DialTimeout("tcp", addr, 60*time.Second)
+		if err != nil {
+			log.Printf("Failed to connect to %s: %v", addr, err)
+			continue
+		}
+		if err := handshake(conn, addr, netParams); err != nil {
+			log.Printf("Handshake with %s failed: %v", addr, err)
+			conn.Close()
+			continue
+		}
+		return conn, addr, nil
+	}
+	return nil, "", fmt.Errorf("no reachable Utreexo-supporting node among %d candidate(s)", len(addrs))
+}
 
+// handshake performs the version/verack exchange and verifies the peer
+// supports Utreexo. On success the connection is left OPEN and ready for block
+// requests; on failure the caller is responsible for closing it.
+func handshake(conn net.Conn, nodeIP string, netParams *chaincfg.Params) error {
 	localAddr := conn.LocalAddr().(*net.TCPAddr)
 	remoteAddr := conn.RemoteAddr().(*net.TCPAddr)
 
@@ -188,7 +214,7 @@ func connectToNode(conn net.Conn, nodeIP string, netParams *chaincfg.Params, cha
 			if err != nil {
 				return fmt.Errorf("failed to send verack message: %v", err)
 			}
-			return requestBlocks(conn, netParams, chain)
+			return nil
 		default:
 			fmt.Printf("Received message from %s: %T\n", nodeIP, m)
 		}

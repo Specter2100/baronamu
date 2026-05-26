@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"encoding/json"
@@ -93,7 +94,7 @@ func main() {
 	// Dial candidates and complete the version/verack handshake. Only after a
 	// Utreexo-supporting peer is confirmed do we create the database, so a failed
 	// connection never leaves an empty database file behind.
-	conn, peerAddr, err := connectToPeer(addrs, netParams)
+	conn, peerAddr, peerIdx, err := connectToPeer(addrs, 0, netParams)
 	if err != nil {
 		log.Fatalf("Failed to connect to any node: %v", err)
 	}
@@ -131,9 +132,22 @@ func main() {
 	}
 	log.Println("Blockchain initialized successfully!")
 
-	// --- Step 3: Request and validate blocks on the established connection. ---
-	if err := requestBlocks(conn, netParams, chain); err != nil {
-		log.Fatalf("Failed to process connection to %s: %v", peerAddr, err)
+	// --- Step 3: Request and validate blocks, failing over to another peer if
+	// the current one drops or misbehaves mid-download. ---
+	for {
+		procErr := requestBlocks(conn, netParams, chain)
+		if procErr == nil {
+			break
+		}
+		log.Printf("Block processing with %s failed: %v", peerAddr, procErr)
+		conn.Close()
+
+		var nextErr error
+		conn, peerAddr, peerIdx, nextErr = connectToPeer(addrs, peerIdx+1, netParams)
+		if nextErr != nil {
+			log.Fatalf("No remaining peer to continue with: %v", nextErr)
+		}
+		log.Printf("Switched to peer %s, resuming block download from the current chain tip...", peerAddr)
 	}
 }
 
@@ -153,12 +167,14 @@ func lookupDNSeeds(seeds []string, defaultPort string) ([]string, error) {
 	return addrs, nil
 }
 
-// connectToPeer dials each candidate address in turn and runs the handshake.
-// It returns the first live connection whose peer supports Utreexo, along with
-// that peer's address. The caller owns the returned connection and must close
-// it. Connections that fail to dial or handshake are closed here.
-func connectToPeer(addrs []string, netParams *chaincfg.Params) (net.Conn, string, error) {
-	for _, addr := range addrs {
+// connectToPeer dials candidates starting at index `start` and runs the
+// handshake. It returns the first live connection whose peer supports Utreexo,
+// that peer's address, and the index it used (so the caller can resume from the
+// next candidate on a later failure). The caller owns the returned connection
+// and must close it. Connections that fail to dial or handshake are closed here.
+func connectToPeer(addrs []string, start int, netParams *chaincfg.Params) (net.Conn, string, int, error) {
+	for i := start; i < len(addrs); i++ {
+		addr := addrs[i]
 		fmt.Printf("Attempting to connect to node: %s\n", addr)
 		conn, err := net.DialTimeout("tcp", addr, 60*time.Second)
 		if err != nil {
@@ -170,9 +186,9 @@ func connectToPeer(addrs []string, netParams *chaincfg.Params) (net.Conn, string
 			conn.Close()
 			continue
 		}
-		return conn, addr, nil
+		return conn, addr, i, nil
 	}
-	return nil, "", fmt.Errorf("no reachable Utreexo-supporting node among %d candidate(s)", len(addrs))
+	return nil, "", len(addrs), fmt.Errorf("no reachable Utreexo-supporting node among candidates %d..%d", start, len(addrs)-1)
 }
 
 // handshake performs the version/verack exchange and verifies the peer
@@ -303,8 +319,14 @@ func processMessages(conn net.Conn, netParams *chaincfg.Params, chain *blockchai
 	for {
 		_, msg, bytes, err := wire.ReadMessageWithEncodingN(conn, wire.FeeFilterVersion, netParams.Net, wire.WitnessEncoding)
 		if err != nil {
-			log.Printf("Failed to read message: %v, %v", err, msg)
-			continue
+			// Unknown/unsupported message commands are harmless; skip them and
+			// keep reading (mirrors the wtxidrelay handling in handshake).
+			if strings.Contains(err.Error(), "unhandled command") {
+				continue
+			}
+			// A real I/O error (peer disconnect, reset, EOF): return so the
+			// caller can fail over to another peer instead of busy-looping.
+			return fmt.Errorf("read error from peer: %v", err)
 		}
 
 		// Handle different message types.
